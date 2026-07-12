@@ -198,23 +198,36 @@ fn resolve_executable(explicit: Option<&str>) -> Option<String> {
     if let Some(e) = explicit {
         return Some(e.to_string());
     }
-    // Trust chromiumoxide's detection ONLY if the path it returns actually
-    // exists. Its default guesses (e.g. `/Applications/Chromium.app`) can name a
-    // browser that isn't installed; trusting that blindly makes launch fail on
-    // machines that have Chrome elsewhere. Verify, then fall through to our own
-    // known locations and finally a `kite install`-managed build.
+    // Prefer a real, directly-launchable browser in a known location over
+    // chromiumoxide's own detection. On macOS that detection can return
+    // Homebrew's `chromium.wrapper.sh` shim: the file exists (so an existence
+    // check passes) but it `exec`s `/Applications/Chromium.app`, which may have
+    // been uninstalled — launching then fails with "No such file or directory".
+    // Our curated paths point straight at the executable, so try them first,
+    // then a `kite install`-managed build.
+    if let Some(p) = known_system_browser().or_else(find_installed_browser) {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // Last resort: chromiumoxide's detection — but only trust a path that both
+    // exists and is a real binary, never a shell shim that may point at a
+    // browser that is no longer installed.
     let opts = chromiumoxide::detection::DetectionOptions {
         msedge: false,
         unstable: false,
     };
     if let Ok(detected) = chromiumoxide::detection::default_executable(opts) {
-        if detected.exists() {
+        if detected.exists() && !is_shell_wrapper(&detected) {
             return Some(detected.to_string_lossy().into_owned());
         }
     }
-    known_system_browser()
-        .or_else(find_installed_browser)
-        .map(|p| p.to_string_lossy().into_owned())
+    None
+}
+
+/// True if `path` looks like a shell shim rather than a real browser executable
+/// (e.g. Homebrew's `chromium.wrapper.sh`), which can `exec` a browser that is
+/// no longer installed and so must not be trusted from auto-detection.
+fn is_shell_wrapper(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e == "sh") || path.to_string_lossy().contains("Caskroom")
 }
 
 /// Standard install locations for a Chromium-family browser, checked when
@@ -2964,6 +2977,23 @@ mod tests {
         );
         assert_eq!(first_existing(&["/no/such/a", "/no/such/b"]), None);
         let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn shell_wrapper_shims_are_rejected() {
+        // The exact shim chromiumoxide detection returns on macOS when the
+        // Homebrew Chromium cask is installed but its app was removed.
+        assert!(is_shell_wrapper(std::path::Path::new(
+            "/opt/homebrew/Caskroom/chromium/latest/chromium.wrapper.sh"
+        )));
+        assert!(is_shell_wrapper(std::path::Path::new(
+            "/some/where/launch.sh"
+        )));
+        // Real browser executables must not be flagged.
+        assert!(!is_shell_wrapper(std::path::Path::new(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        )));
+        assert!(!is_shell_wrapper(std::path::Path::new("/usr/bin/chromium")));
     }
 
     #[test]
