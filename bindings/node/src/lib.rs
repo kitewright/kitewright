@@ -210,6 +210,14 @@ fn map_pdf_options(o: NodePdfOptions) -> PdfOptions {
 #[napi]
 pub async fn launch(options: Option<LaunchOptions>) -> napi::Result<Browser> {
     let mut config = EngineConfig::default();
+    // Puppeteer runs HEADLESS by default; the engine now defaults to headed, so
+    // override to match Puppeteer semantics (and don't inherit KITE_HEADLESS).
+    // Only go headed when the caller explicitly passes `headless: false`.
+    config.headful = matches!(options.as_ref().and_then(|o| o.headless), Some(false));
+    if !config.headful {
+        // Headless service defaults regardless of the ambient KITE_HEADLESS env.
+        config.idle_ttl = std::time::Duration::from_secs(120);
+    }
     if let Some(opts) = options {
         if let Some(exe) = opts.executable_path {
             config.executable = Some(exe);
