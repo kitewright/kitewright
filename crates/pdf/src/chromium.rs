@@ -27,6 +27,15 @@ fn pdf_options(req: &RenderRequest) -> PdfOptions {
 /// Render a request through Chromium, reusing the given (lazily-launched)
 /// engine. `html` is loaded via `set_content`; otherwise `url` is navigated.
 pub async fn render(engine: &Engine, req: &RenderRequest) -> Result<Vec<u8>, RenderError> {
+    // Validate client-supplied ranges up front so a bad value is a 400, not a
+    // 500 surfaced from deep inside CDP printToPDF.
+    if let Some(scale) = req.scale {
+        if !(0.1..=2.0).contains(&scale) {
+            return Err(RenderError::bad_request(format!(
+                "scale {scale} out of range (Chrome printToPDF accepts 0.1–2.0)"
+            )));
+        }
+    }
     let opts = pdf_options(req);
     let session: BrowserSession = engine.create_session();
 

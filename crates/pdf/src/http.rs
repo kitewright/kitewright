@@ -7,7 +7,7 @@
 //! if this is ever exposed publicly.
 
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,11 +17,27 @@ use axum::{
 use crate::request::{RenderError, RenderRequest};
 use crate::AppState;
 
+/// Default request-body cap. axum's built-in default is only 2 MB, which
+/// rejects routine PDF inputs (HTML with base64-embedded images/fonts) with an
+/// opaque 413 before the handler runs. Override via KITE_PDF_MAX_BODY_MB.
+const DEFAULT_MAX_BODY_MB: usize = 32;
+
+fn max_body_bytes() -> usize {
+    std::env::var("KITE_PDF_MAX_BODY_MB")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(DEFAULT_MAX_BODY_MB)
+        * 1024
+        * 1024
+}
+
 /// Build the router for the render service.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/render", post(render_handler))
         .route("/healthz", get(healthz))
+        .layer(DefaultBodyLimit::max(max_body_bytes()))
         .with_state(state)
 }
 

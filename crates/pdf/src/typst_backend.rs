@@ -153,7 +153,27 @@ pub async fn render(req: &RenderRequest) -> Result<Vec<u8>, RenderError> {
             .map_err(|e| RenderError::bad_request(format!("`data` is not serializable: {e}")))?,
         None => "null".to_string(),
     };
-    tokio::task::spawn_blocking(move || compile_to_pdf(template, data_json))
-        .await
-        .map_err(|e| RenderError::internal(format!("typst render task failed: {e}")))?
+    let handle = tokio::task::spawn_blocking(move || compile_to_pdf(template, data_json));
+    // Bound the client-facing wait: a hostile/degenerate template can burn CPU
+    // in typst::compile, and spawn_blocking can't be cancelled — at least don't
+    // make the caller hang forever. (The blocking thread runs to completion;
+    // treat templates as trusted for true DoS resistance.)
+    let out = tokio::time::timeout(TYPST_COMPILE_TIMEOUT, handle).await;
+    // Bound the process-global comemo memoization cache, which otherwise grows
+    // without limit across compiles (typst-cli evicts after each run too).
+    comemo::evict(TYPST_CACHE_MAX_AGE);
+    match out {
+        Err(_) => Err(RenderError::internal(format!(
+            "typst compile exceeded {}s",
+            TYPST_COMPILE_TIMEOUT.as_secs()
+        ))),
+        Ok(joined) => {
+            joined.map_err(|e| RenderError::internal(format!("typst render task failed: {e}")))?
+        }
+    }
 }
+
+/// Client-facing timeout for a single Typst compile.
+const TYPST_COMPILE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How many `evict` generations a memoized entry survives without reuse.
+const TYPST_CACHE_MAX_AGE: usize = 5;

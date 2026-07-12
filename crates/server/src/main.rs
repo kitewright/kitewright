@@ -758,8 +758,18 @@ impl HttpGuard {
             .map(|(_, rest)| rest)
             .unwrap_or(origin);
         let host = host.split('/').next().unwrap_or(host);
-        let hostname = host.rsplit_once(':').map_or(host, |(h, _)| h);
-        matches!(hostname, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+        // Strip the port carefully: a bracketed IPv6 host ([::1]) contains
+        // colons, so only split on the LAST colon that comes after a closing
+        // bracket (or when there are no brackets at all).
+        let hostname = if host.starts_with('[') {
+            match host.split_once(']') {
+                Some((addr, _)) => addr.trim_start_matches('['),
+                None => host,
+            }
+        } else {
+            host.rsplit_once(':').map_or(host, |(h, _)| h)
+        };
+        matches!(hostname, "localhost" | "127.0.0.1" | "::1")
     }
 
     /// Fixed-window counter. Returns false when the client exceeded the limit.
@@ -905,7 +915,10 @@ async fn run_stdio() -> Result<()> {
 
 /// Serve MCP over Streamable HTTP (networked; supports many sessions + auth).
 async fn run_http() -> Result<()> {
-    let bind = std::env::var("MCP_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
+    // Default to loopback: an HTTP server with no auth token (auth is optional)
+    // must not be exposed on all interfaces by accident. Deployments that need
+    // external reach set MCP_HTTP_BIND explicitly (the Docker image does).
+    let bind = std::env::var("MCP_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1:8090".to_string());
     let engine = Engine::new(EngineConfig::default());
     let engine_for_shutdown = engine.clone();
     let guard = HttpGuard::from_env();

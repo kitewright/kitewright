@@ -42,6 +42,9 @@ use tokio::task::JoinHandle;
 
 const MAX_TEXT_CHARS: usize = 20_000;
 const MAX_SNAPSHOT_CHARS: usize = 15_000;
+/// Recursion-depth cap for the accessibility-tree walk (stack-overflow guard on
+/// pathologically deep pages). Far deeper than any real document nests.
+const MAX_AX_DEPTH: usize = 256;
 const MAX_MARKDOWN_CHARS: usize = 20_000;
 const WAIT_FOR_POLL: Duration = Duration::from_millis(100);
 /// Upper bound on how long a single poll's CDP evaluation may block before it is
@@ -455,6 +458,17 @@ impl Engine {
     /// Whether a browser process is currently alive (used by tests and metrics).
     pub async fn is_running(&self) -> bool {
         self.handle.lock().await.is_some()
+    }
+
+    /// Refresh the idle-reaper clock mid-operation. Long single ops (a polling
+    /// `wait_for`/`assert`) otherwise only touch `last_used` once at the start,
+    /// so a short `idle_ttl` could reap the browser out from under an in-flight
+    /// wait. Callers already hold the session state lock; taking the handle lock
+    /// here keeps the established state→handle order.
+    pub(crate) async fn touch_activity(&self) {
+        if let Some(h) = self.handle.lock().await.as_mut() {
+            h.last_used = Instant::now();
+        }
     }
 
     /// Number of pre-warmed contexts currently held in the warm pool (0 when
@@ -1293,15 +1307,14 @@ impl BrowserSession {
             .await
             .context("failed to subscribe to dialog events")?;
         let page_for_task = page.clone();
-        let behavior = Arc::clone(&self.shared);
+        // Weak, not Arc: a strong ref here would pin the session and block Drop
+        // (which closes the page), leaking the context+page. Upgrade per event.
+        let weak = Arc::downgrade(&self.shared);
         // The stream ends when the page closes, so the task exits with the page.
         tokio::spawn(async move {
             while events.next().await.is_some() {
-                let desired = behavior
-                    .dialog
-                    .lock()
-                    .expect("dialog mutex poisoned")
-                    .clone();
+                let Some(shared) = weak.upgrade() else { break };
+                let desired = shared.dialog.lock().expect("dialog mutex poisoned").clone();
                 if let Some(b) = desired {
                     let mut params = HandleJavaScriptDialogParams::new(b.accept);
                     params.prompt_text = b.prompt_text;
@@ -1444,6 +1457,8 @@ impl BrowserSession {
                     elapsed_ms: started.elapsed().as_millis() as u64,
                 });
             }
+            // Keep the browser from being idle-reaped mid-assert.
+            self.shared.engine.touch_activity().await;
             tokio::time::sleep(WAIT_FOR_POLL).await;
         }
     }
@@ -1516,6 +1531,8 @@ impl BrowserSession {
                     ),
                 });
             }
+            // Keep the browser from being idle-reaped mid-wait.
+            self.shared.engine.touch_activity().await;
             tokio::time::sleep(WAIT_FOR_POLL).await;
         }
     }
@@ -1630,10 +1647,18 @@ impl BrowserSession {
             page.execute(NetworkEnableParams::default()),
         );
 
+        // The tasks below hold a WEAK ref to the session, upgrading only to push
+        // an event. Holding a strong `Arc` would pin `SessionShared` forever —
+        // each stream ends only when the page closes, but the page closes in
+        // `Drop`, which can't run while a strong ref is parked here. That cycle
+        // leaked a context + page per session (Drop never fired). With a Weak,
+        // the last real Arc dropping lets Drop run, which closes the page and
+        // ends these streams.
         if let Ok(mut events) = page.event_listener::<EventConsoleApiCalled>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.console,
                         ConsoleMessage {
@@ -1645,9 +1670,10 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventEntryAdded>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.console,
                         ConsoleMessage {
@@ -1659,9 +1685,10 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventRequestWillBeSent>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.network,
                         NetworkRequest {
@@ -1676,12 +1703,16 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventResponseReceived>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     let rid = e.request_id.inner();
                     let status = e.response.status;
-                    if let Ok(mut buf) = shared.network.lock() {
+                    // Named binding (drops before `shared`) so the guard can't
+                    // outlive the per-iteration upgraded Arc.
+                    let locked = shared.network.lock();
+                    if let Ok(mut buf) = locked {
                         // Fill in the status on the most recent matching request.
                         if let Some(item) = buf.iter_mut().rev().find(|r| &r.request_id == rid) {
                             item.status = Some(status);
@@ -1696,6 +1727,7 @@ impl BrowserSession {
     /// `lite` toggles resource blocking for this navigation (applied before the
     /// load so blocked resources are never fetched).
     async fn goto(&self, st: &mut SessionState, page: &Page, url: &str, lite: bool) -> Result<()> {
+        validate_navigation_url(url)?;
         apply_blocking(page, lite).await;
         tokio::time::timeout(self.shared.engine.config.nav_timeout, page.goto(url))
             .await
@@ -2813,6 +2845,12 @@ fn render_ax_node(
     if *truncated {
         return;
     }
+    // Bound recursion independently of the output cap: skipped structural nodes
+    // produce no text yet still recurse, so a pathologically deep AX tree could
+    // overflow the stack even while under MAX_SNAPSHOT_CHARS.
+    if depth > MAX_AX_DEPTH {
+        return;
+    }
     if out.len() >= MAX_SNAPSHOT_CHARS {
         *truncated = true;
         return;
@@ -2951,6 +2989,38 @@ fn cap(s: String, max: usize) -> String {
 
 fn serde_json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Guard navigation against schemes that read local files or reach non-web
+/// resources. http/https/about/data/blob pass; `file:` is allowed only when
+/// `KITE_ALLOW_FILE_URLS` is set (off by default, so an agent can't exfiltrate
+/// local files like `file:///etc/passwd`); anything else (javascript:, chrome:,
+/// view-source:, …) is rejected. A URL with no parseable scheme (bare host /
+/// relative) is left for the browser to resolve.
+fn validate_navigation_url(url: &str) -> Result<()> {
+    let scheme = match url.split_once(':') {
+        Some((s, _))
+            if !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            s.to_ascii_lowercase()
+        }
+        _ => return Ok(()),
+    };
+    match scheme.as_str() {
+        "http" | "https" | "about" | "data" | "blob" => Ok(()),
+        "file" => {
+            if std::env::var("KITE_ALLOW_FILE_URLS").is_ok() {
+                Ok(())
+            } else {
+                bail!(
+                    "file:// navigation is disabled by default; set KITE_ALLOW_FILE_URLS=1 to allow local-file access"
+                )
+            }
+        }
+        other => bail!("navigation to {other}: URLs is not allowed"),
+    }
 }
 
 /// Per-poll CDP evaluation budget for [`BrowserSession::wait_for`] /
