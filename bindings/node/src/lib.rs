@@ -165,11 +165,19 @@ impl Page {
         Ok(value.to_string())
     }
 
-    /// puppeteer `page.goto(url, options)`.
+    /// puppeteer `page.goto(url, options)`. Honors `waitUntil` (load /
+    /// domcontentloaded resolve on the navigation; networkidle0/2 add a settle).
+    /// NOTE: a custom `timeout` is not yet plumbed through — the engine's default
+    /// navigation timeout applies.
     #[napi]
-    pub async fn goto(&self, url: String, _options: Option<GotoOptions>) -> napi::Result<()> {
+    pub async fn goto(&self, url: String, options: Option<GotoOptions>) -> napi::Result<()> {
         let session = self.session.clone();
-        session.navigate(&url).await.map(|_| ()).map_err(to_napi)
+        let wait_until = options.and_then(|o| o.wait_until);
+        session
+            .navigate_wait(&url, wait_until.as_deref())
+            .await
+            .map(|_| ())
+            .map_err(to_napi)
     }
 
     /// puppeteer `page.pdf(options)` — returns a Node Buffer of PDF bytes.
