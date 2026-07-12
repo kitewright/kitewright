@@ -1,0 +1,8 @@
+target/
+node_modules/
+*.node
+.DS_Store
+# napi-rs generated bindings + local e2e output (build artifacts)
+bindings/node/binding.js
+bindings/node/binding.d.ts
+bindings/node/test/out/

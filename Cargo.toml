@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/server"]
+# The napi-rs Node addon is built separately (its own `napi build` command) and
+# is deliberately kept OUT of the core workspace so `cargo clippy --workspace`,
+# `cargo build --release -p kitewright`, and the 28 engine/server tests never
+# depend on the napi toolchain or its cdylib crate-type.
+exclude = ["bindings/node"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/kitewright/kitewright"
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

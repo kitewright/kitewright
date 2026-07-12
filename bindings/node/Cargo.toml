@@ -1,0 +1,25 @@
+[package]
+name = "kitewright-node"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Puppeteer-compatible Node.js (napi-rs) bindings over kitewright-engine"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi4 = threadsafe fns / Promise support; tokio_rt = an addon-owned tokio
+# runtime so our async engine methods run without the caller managing one.
+napi = { version = "2", default-features = false, features = ["napi4", "tokio_rt"] }
+napi-derive = "2"
+kitewright-engine = { path = "../../crates/engine" }
+serde_json = "1"
+anyhow = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+strip = "symbols"

@@ -1,0 +1,26 @@
+[package]
+name = "kitewright"
+description = "Kitewright — a lightweight browser-automation MCP server (Streamable HTTP) for AI agents. A single 7 MB binary alternative to Playwright-MCP."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kite"
+path = "src/main.rs"
+
+[dependencies]
+kitewright-engine = { path = "../engine" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmcp = { version = "0.16", features = ["server", "transport-streamable-http-server"] }
+axum = "0.8"
+schemars = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false }

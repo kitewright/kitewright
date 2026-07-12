@@ -1,0 +1,33 @@
+{
+  "name": "@kitewright/node",
+  "version": "0.1.0",
+  "description": "Puppeteer-compatible (experimental) HTML→PDF / browser automation backed by the Rust kitewright-engine via napi-rs",
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "napi": {
+    "name": "kitewright-node",
+    "triples": {}
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "binding.js",
+    "binding.d.ts",
+    "*.node"
+  ],
+  "scripts": {
+    "build": "napi build --release --js binding.js --dts binding.d.ts",
+    "build:debug": "napi build --js binding.js --dts binding.d.ts",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4"
+  }
+}
