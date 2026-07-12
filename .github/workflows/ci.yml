@@ -36,7 +36,10 @@ jobs:
         env:
           BROWSER_EXECUTABLE: ${{ steps.chrome.outputs.chrome-path }}
           BROWSER_NO_SANDBOX: "1"
-        run: cargo test --workspace
+        # Single-threaded: the e2e tests each spawn a server + Chromium, and
+        # running many browsers in parallel exhausts CPU/RAM/shm on 2-core
+        # shared CI runners (empty CDP responses / timeouts). Slower but stable.
+        run: cargo test --workspace -- --test-threads=1
 
       - name: Release build
         run: cargo build --release -p kitewright

@@ -484,6 +484,11 @@ impl Engine {
             "--disable-gpu",
             "--disable-extensions",
             "--mute-audio",
+            // Write shared memory to /tmp instead of /dev/shm. On Linux CI and in
+            // containers /dev/shm is often tiny (~64MB), which crashes Chromium's
+            // renderer mid-navigation (seen as empty/timed-out CDP responses).
+            // Harmless elsewhere.
+            "--disable-dev-shm-usage",
             // Skip startup work that only matters for interactive Chrome:
             "--no-first-run",
             "--no-default-browser-check",
