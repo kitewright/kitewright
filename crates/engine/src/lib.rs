@@ -89,17 +89,31 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
+        // Headed by default; KITE_HEADLESS opts into headless.
+        let headful = std::env::var("KITE_HEADLESS").is_err();
         Self {
-            idle_ttl: Duration::from_secs(120),
+            // Headless (server) reaps aggressively to free ~300MB. Headed is
+            // driven by a human at human pace — with pauses to read, type
+            // credentials, or coordinate — so a 120s reap would kill the window
+            // mid-task; give it a much longer idle window.
+            idle_ttl: if headful {
+                Duration::from_secs(1800)
+            } else {
+                Duration::from_secs(120)
+            },
             nav_timeout: Duration::from_secs(20),
             no_sandbox: std::env::var("BROWSER_NO_SANDBOX").is_ok(),
-            // Headed by default; KITE_HEADLESS opts into headless.
-            headful: std::env::var("KITE_HEADLESS").is_err(),
+            headful,
             executable: std::env::var("BROWSER_EXECUTABLE").ok(),
+            // The warm-context pool holds blank pages open for instant new
+            // sessions — invisible in headless, but in HEADED mode each pooled
+            // page is a visible window, so one tool call would pop several
+            // windows. Disable the pool when headed unless the user explicitly
+            // sets MCP_CONTEXT_POOL, so one call opens exactly one window.
             context_pool_size: std::env::var("MCP_CONTEXT_POOL")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(2),
+                .unwrap_or(if headful { 0 } else { 2 }),
             cache_dir: std::env::var("KITE_CACHE_DIR")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -506,8 +520,26 @@ impl Engine {
     // -- internals -----------------------------------------------------------
 
     async fn launch_if_needed(&self, guard: &mut Option<BrowserHandle>) -> Result<()> {
-        if guard.is_some() {
-            return Ok(());
+        // Present isn't the same as alive. The browser can die on its own — a
+        // crash, an OOM, the user closing the headed window, an external kill —
+        // WITHOUT the reaper running, leaving a handle whose CDP channel is dead;
+        // reusing it makes every call fail with "receiver is gone". (The handler
+        // stream keeps yielding Err rather than ending on connection loss, so
+        // `event_task.is_finished()` is NOT a reliable death signal.) Probe it
+        // with a cheap CDP call under a short budget; if it doesn't answer,
+        // discard the corpse and fall through to relaunch.
+        if let Some(h) = guard.as_ref() {
+            let responsive = matches!(
+                tokio::time::timeout(Duration::from_secs(2), h.browser.version()).await,
+                Ok(Ok(_))
+            );
+            if responsive {
+                return Ok(());
+            }
+            tracing::warn!("browser unresponsive (crash / closed window / kill); relaunching");
+            if let Some(dead) = guard.take() {
+                close_handle(dead, "browser died").await;
+            }
         }
         let started = Instant::now();
         let seq = LAUNCH_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -533,31 +565,36 @@ impl Engine {
         // cache instead of the network. Best-effort: a create failure just
         // means Chromium falls back to its default in-profile cache.
         let _ = tokio::fs::create_dir_all(&self.config.cache_dir).await;
-        let disk_cache_arg = format!("--disk-cache-dir={}", self.config.cache_dir.display());
+        // chromiumoxide renders each arg as `--{key}`, so keys MUST be bare (no
+        // leading `--`) — passing `--no-sandbox` yields `----no-sandbox`, which
+        // Chrome ignores. That silently defeated every flag here: most notably
+        // `no-sandbox` (fatal "No usable sandbox!" on Linux CI/containers) and
+        // `disable-dev-shm-usage`.
+        let disk_cache_arg = format!("disk-cache-dir={}", self.config.cache_dir.display());
         let mut args: Vec<String> = [
-            "--disable-gpu",
-            "--disable-extensions",
-            "--mute-audio",
+            "disable-gpu",
+            "disable-extensions",
+            "mute-audio",
             // Write shared memory to /tmp instead of /dev/shm. On Linux CI and in
             // containers /dev/shm is often tiny (~64MB), which crashes Chromium's
             // renderer mid-navigation (seen as empty/timed-out CDP responses).
             // Harmless elsewhere.
-            "--disable-dev-shm-usage",
+            "disable-dev-shm-usage",
             // Skip startup work that only matters for interactive Chrome:
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-sync",
-            "--disable-default-apps",
-            "--hide-scrollbars",
+            "no-first-run",
+            "no-default-browser-check",
+            "disable-background-networking",
+            "disable-component-update",
+            "disable-sync",
+            "disable-default-apps",
+            "hide-scrollbars",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         args.push(disk_cache_arg);
         if self.config.no_sandbox {
-            args.push("--no-sandbox".to_string());
+            args.push("no-sandbox".to_string());
         }
         builder = builder.args(args);
         // Headed (visible window) mode is opt-in via KITE_HEADFUL; the default
