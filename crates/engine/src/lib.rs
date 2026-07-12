@@ -64,6 +64,10 @@ pub struct EngineConfig {
     pub nav_timeout: Duration,
     /// Pass --no-sandbox (required in most containers).
     pub no_sandbox: bool,
+    /// Launch a visible (headed) browser window instead of headless. Useful for
+    /// watching/debugging automation locally. Requires a display — leave off on
+    /// servers/CI. Read from `KITE_HEADFUL`.
+    pub headful: bool,
     /// Optional path to a chrome/chromium/chrome-headless-shell binary.
     pub executable: Option<String>,
     /// How many pre-warmed blank browser contexts to keep ready so a NEW
@@ -88,6 +92,7 @@ impl Default for EngineConfig {
             idle_ttl: Duration::from_secs(120),
             nav_timeout: Duration::from_secs(20),
             no_sandbox: std::env::var("BROWSER_NO_SANDBOX").is_ok(),
+            headful: std::env::var("KITE_HEADFUL").is_ok(),
             executable: std::env::var("BROWSER_EXECUTABLE").ok(),
             context_pool_size: std::env::var("MCP_CONTEXT_POOL")
                 .ok()
@@ -193,17 +198,51 @@ fn resolve_executable(explicit: Option<&str>) -> Option<String> {
     if let Some(e) = explicit {
         return Some(e.to_string());
     }
-    // Match chromiumoxide's default detection so behavior is unchanged when a
-    // system browser exists; skip Edge to prefer a real Chrome/Chromium.
+    // Trust chromiumoxide's detection ONLY if the path it returns actually
+    // exists. Its default guesses (e.g. `/Applications/Chromium.app`) can name a
+    // browser that isn't installed; trusting that blindly makes launch fail on
+    // machines that have Chrome elsewhere. Verify, then fall through to our own
+    // known locations and finally a `kite install`-managed build.
     let opts = chromiumoxide::detection::DetectionOptions {
         msedge: false,
         unstable: false,
     };
-    if chromiumoxide::detection::default_executable(opts).is_ok() {
-        // Let chromiumoxide detect it (keeps the previous code path exactly).
-        return None;
+    if let Ok(detected) = chromiumoxide::detection::default_executable(opts) {
+        if detected.exists() {
+            return Some(detected.to_string_lossy().into_owned());
+        }
     }
-    find_installed_browser().map(|p| p.to_string_lossy().into_owned())
+    known_system_browser()
+        .or_else(find_installed_browser)
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Standard install locations for a Chromium-family browser, checked when
+/// chromiumoxide's own detection misses or returns a path that doesn't exist.
+const SYSTEM_BROWSER_PATHS: &[&str] = &[
+    // macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    // Linux
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/chrome",
+    // Windows
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+];
+
+fn known_system_browser() -> Option<PathBuf> {
+    first_existing(SYSTEM_BROWSER_PATHS)
+}
+
+fn first_existing(paths: &[&str]) -> Option<PathBuf> {
+    paths.iter().map(PathBuf::from).find(|p| p.exists())
 }
 
 /// URL patterns blocked in "lite" mode via CDP `Network.setBlockedURLs`
@@ -506,6 +545,11 @@ impl Engine {
             args.push("--no-sandbox".to_string());
         }
         builder = builder.args(args);
+        // Headed (visible window) mode is opt-in via KITE_HEADFUL; the default
+        // is headless (correct for agents/servers/CI).
+        if self.config.headful {
+            builder = builder.with_head();
+        }
         let config = builder.build().map_err(|e| anyhow::anyhow!(e))?;
 
         let (browser, mut handler) = Browser::launch(config).await.context(
@@ -2905,6 +2949,21 @@ mod tests {
         assert!(version_key("120.0.0.0") > version_key("99.0.4844.51"));
         assert!(version_key("120.0.6099.109") > version_key("120.0.6099.99"));
         assert_eq!(version_key("1.2.3"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn first_existing_skips_missing_returns_present() {
+        let marker = std::env::temp_dir().join("kite-detect-existence-marker");
+        std::fs::write(&marker, b"x").unwrap();
+        let present = marker.to_str().unwrap();
+        // A bogus path first (like the orphaned /Applications/Chromium.app) must
+        // be skipped in favor of the one that actually exists.
+        assert_eq!(
+            first_existing(&["/no/such/kite/browser/path", present]),
+            Some(marker.clone())
+        );
+        assert_eq!(first_existing(&["/no/such/a", "/no/such/b"]), None);
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
