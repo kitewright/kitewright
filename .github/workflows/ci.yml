@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # macOS runners bill at 10x minutes, so push/PR run ubuntu-only (see the
+  # matrix expressions below); full cross-OS coverage runs nightly and on demand.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,7 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu (1x) on every push/PR; add macOS only on the nightly schedule
+        # or a manual run.
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +91,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu (1x) on every push/PR; macOS only nightly / on demand (10x).
+        os: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     steps:
