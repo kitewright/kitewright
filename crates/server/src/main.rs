@@ -732,6 +732,10 @@ struct HttpGuard {
     limit_per_minute: u32,
     /// Extra allowed `Origin` values beyond loopback (from MCP_ALLOWED_ORIGINS).
     allowed_origins: Arc<[String]>,
+    /// Trust `X-Forwarded-For` for the client IP (behind a reverse proxy).
+    /// Off by default — honoring it when NOT behind a trusted proxy would let a
+    /// client spoof its rate-limit bucket. Enable with MCP_TRUST_PROXY.
+    trust_proxy: bool,
 }
 
 impl HttpGuard {
@@ -761,7 +765,30 @@ impl HttpGuard {
             rate: Arc::new(Mutex::new(HashMap::new())),
             limit_per_minute,
             allowed_origins,
+            trust_proxy: matches!(
+                std::env::var("MCP_TRUST_PROXY").ok().as_deref(),
+                Some("1") | Some("true") | Some("yes")
+            ),
         }
+    }
+
+    /// The client IP to rate-limit on: the socket peer, or the first
+    /// `X-Forwarded-For` hop when `MCP_TRUST_PROXY` is set (deployments behind a
+    /// reverse proxy, where every peer IP is the proxy's).
+    fn client_ip(&self, addr: &SocketAddr, req: &Request) -> IpAddr {
+        if self.trust_proxy {
+            if let Some(ip) = req
+                .headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.split(',').next())
+                .map(str::trim)
+                .and_then(|s| s.parse::<IpAddr>().ok())
+            {
+                return ip;
+            }
+        }
+        addr.ip()
     }
 
     /// DNS-rebinding protection. A cross-origin webpage in a victim's browser
@@ -855,7 +882,7 @@ async fn guard_middleware(
              set MCP_ALLOWED_ORIGINS to allow-list an origin",
         );
     }
-    if !guard.allow(addr.ip()) {
+    if !guard.allow(guard.client_ip(&addr, &req)) {
         return rpc_error(
             StatusCode::TOO_MANY_REQUESTS,
             -32000,
@@ -986,11 +1013,13 @@ async fn run_http() -> Result<()> {
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-        engine_for_shutdown.shutdown().await;
-    })
+    // Only await the signal here — axum starts draining in-flight requests once
+    // this future resolves. Tearing the browser down inside it would kill
+    // Chromium BEFORE those requests drain, so a mid-flight pdf/wait_for would
+    // fail against a dead browser. Shut the engine down AFTER draining finishes.
+    .with_graceful_shutdown(shutdown_signal())
     .await?;
+    engine_for_shutdown.shutdown().await;
     Ok(())
 }
 
