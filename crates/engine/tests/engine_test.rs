@@ -245,6 +245,7 @@ fn test_engine_cfg(idle_ttl: Duration, context_pool_size: usize) -> Engine {
         context_pool_size,
         cache_dir: std::env::temp_dir().join(unique),
         prewarm_url: None,
+        viewport: (1440, 900),
     })
 }
 
@@ -1269,6 +1270,7 @@ async fn connection_prewarm_noops_when_unset_and_warms_when_set() {
         context_pool_size: 1,
         cache_dir: std::env::temp_dir().join(format!("kitewright-test-pw-{}", std::process::id())),
         prewarm_url: Some(target.clone()),
+        viewport: (1440, 900),
     });
     engine2
         .prewarm()
@@ -1307,6 +1309,7 @@ async fn shared_cache_dir_is_created_and_reused() {
         context_pool_size: 1,
         cache_dir: cache_dir.clone(),
         prewarm_url: None,
+        viewport: (1440, 900),
     });
     let url = start_fixture_server().await;
 

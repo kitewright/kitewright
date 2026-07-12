@@ -35,6 +35,7 @@ use chromiumoxide::cdp::browser_protocol::target::{
 use chromiumoxide::cdp::js_protocol::runtime::{
     EnableParams as RuntimeEnableParams, EventConsoleApiCalled, RemoteObject,
 };
+use chromiumoxide::handler::viewport::Viewport;
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use tokio::sync::Mutex;
@@ -96,6 +97,11 @@ pub struct EngineConfig {
     /// connection is established before the first real navigate. Read from
     /// `KITE_PREWARM_URL`. No-op when unset.
     pub prewarm_url: Option<String>,
+    /// Default viewport (and, when headed, window) size in CSS pixels. Chromium's
+    /// own default is a cramped 800x600; this defaults to 1440x900. Read from
+    /// `KITE_VIEWPORT` as `WIDTHxHEIGHT` (e.g. `1280x720`). Adjustable at runtime
+    /// via the `browser_resize` tool.
+    pub viewport: (u32, u32),
 }
 
 impl Default for EngineConfig {
@@ -133,8 +139,21 @@ impl Default for EngineConfig {
             prewarm_url: std::env::var("KITE_PREWARM_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            viewport: std::env::var("KITE_VIEWPORT")
+                .ok()
+                .and_then(|s| parse_viewport(&s))
+                .unwrap_or((1440, 900)),
         }
     }
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport string (e.g. `1280x720`). Returns None on any
+/// malformed input so the caller falls back to the default.
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    let w: u32 = w.trim().parse().ok().filter(|n| *n > 0)?;
+    let h: u32 = h.trim().parse().ok().filter(|n| *n > 0)?;
+    Some((w, h))
 }
 
 // -- browser install cache (shared with `kite install`) -----------------------
@@ -626,9 +645,20 @@ impl Engine {
         if self.config.no_sandbox {
             args.push("no-sandbox".to_string());
         }
+        // Size the OS window (headed) to match the viewport instead of Chrome's
+        // cramped default.
+        let (vw, vh) = self.config.viewport;
+        args.push(format!("window-size={vw},{vh}"));
         builder = builder.args(args);
-        // Headed (visible window) mode is opt-in via KITE_HEADFUL; the default
-        // is headless (correct for agents/servers/CI).
+        // Replace chromiumoxide's 800x600 default viewport with our default (or
+        // KITE_VIEWPORT) so pages render — and screenshot — at a usable size.
+        builder = builder.viewport(Viewport {
+            width: vw,
+            height: vh,
+            ..Viewport::default()
+        });
+        // Headed launches a visible window; headless (KITE_HEADLESS) is correct
+        // for agents/servers/CI.
         if self.config.headful {
             builder = builder.with_head();
         }
@@ -1031,6 +1061,36 @@ impl BrowserSession {
             .and_then(|r| r.get("value"))
             .cloned()
             .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// Resize the page's viewport to `width`x`height` CSS pixels via CDP
+    /// `Emulation.setDeviceMetricsOverride` (affects layout and screenshots). A
+    /// zero width AND height clears the override, restoring the launch default.
+    pub async fn resize(&self, width: u32, height: u32) -> Result<()> {
+        let mut st = self.shared.state.lock().await;
+        let page = self.ensure_page(&mut st, false).await?;
+        let (id, params) = if width == 0 && height == 0 {
+            (
+                "Emulation.clearDeviceMetricsOverride",
+                serde_json::json!({}),
+            )
+        } else if width == 0 || height == 0 {
+            bail!("resize needs a non-zero width and height (or 0x0 to reset)");
+        } else {
+            (
+                "Emulation.setDeviceMetricsOverride",
+                serde_json::json!({
+                    "width": width,
+                    "height": height,
+                    "deviceScaleFactor": 1,
+                    "mobile": false,
+                }),
+            )
+        };
+        page.execute(RawCommand { id, params })
+            .await
+            .with_context(|| format!("{id} failed"))?;
+        Ok(())
     }
 
     /// Convert the current page's main content to Markdown for LLM consumption
