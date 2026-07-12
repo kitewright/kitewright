@@ -152,6 +152,15 @@ struct EvaluateParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct ResizeParams {
+    /// Viewport width in CSS pixels. Use 0 (with height 0) to reset to the
+    /// launch default.
+    width: u32,
+    /// Viewport height in CSS pixels.
+    height: u32,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct HandleDialogParams {
     /// Accept (true) or dismiss (false) the next dialog(s)
     accept: bool,
@@ -609,6 +618,19 @@ impl BrowserMcp {
     ) -> Result<CallToolResult, McpError> {
         let value = self.session.evaluate(&script).await.map_err(err)?;
         Ok(json_text(serde_json::json!({ "result": value })))
+    }
+
+    #[tool(
+        description = "Resize the page viewport (CSS pixels), affecting layout and screenshots — e.g. 1440x900 desktop or 390x844 mobile. Pass width:0 and height:0 to reset to the launch default. The launch default is 1440x900 (override with KITE_VIEWPORT)."
+    )]
+    async fn browser_resize(
+        &self,
+        Parameters(ResizeParams { width, height }): Parameters<ResizeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.session.resize(width, height).await.map_err(err)?;
+        Ok(json_text(
+            serde_json::json!({ "width": width, "height": height }),
+        ))
     }
 
     #[tool(
