@@ -125,6 +125,7 @@ claude mcp add kite --transport http http://localhost:8090/mcp
 | `MCP_RATE_LIMIT_PER_MINUTE` | `300` | Per-client-IP request limit (fixed 60s window); 429 when exceeded |
 | `BROWSER_EXECUTABLE` | auto-detect | Path to chrome / chromium / chrome-headless-shell. When unset: a system Chrome/Chromium is detected, else a `kite install`-managed build in the cache dir |
 | `BROWSER_NO_SANDBOX` | unset | Set (any value) to pass `--no-sandbox` (containers) |
+| `KITE_HEADLESS` | unset | Kite launches a **headed** (visible) browser by default so you can watch automation. Set (any value) to run **headless** — required on servers, CI, and containers with no display, where a headed Chrome fails to launch |
 | `MCP_CONTEXT_POOL` | `2` | Number of pre-warmed blank browser contexts kept ready so a **new** session gets an instantly-usable context+page (zero context-creation latency). `0` disables. The pool refills in the background and drains with the browser on idle-reap (it never keeps the process alive) |
 | `KITE_CACHE_DIR` | `<tmp>/kitewright-cache` | Shared on-disk HTTP cache (`--disk-cache-dir`), stable across launches so repeat asset fetches hit cache. NOTE: per-session isolated contexts (cookie isolation) use an ephemeral cache; this benefits the browser's default context |
 | `KITE_PREWARM_URL` | unset | If set, prewarm navigates a throwaway page to this origin to establish DNS+TLS+connection before the first real navigate. No-op when unset |

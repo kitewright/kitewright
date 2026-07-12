@@ -32,6 +32,7 @@ RUN apt-get update && \
 
 ENV BROWSER_EXECUTABLE=/usr/bin/chromium \
     BROWSER_NO_SANDBOX=1 \
+    KITE_HEADLESS=1 \
     KITE_PDF_BIND=0.0.0.0:8091 \
     KITE_CACHE_DIR=/home/kite/.cache/kitewright
 

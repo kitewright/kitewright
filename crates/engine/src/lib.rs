@@ -64,9 +64,10 @@ pub struct EngineConfig {
     pub nav_timeout: Duration,
     /// Pass --no-sandbox (required in most containers).
     pub no_sandbox: bool,
-    /// Launch a visible (headed) browser window instead of headless. Useful for
-    /// watching/debugging automation locally. Requires a display — leave off on
-    /// servers/CI. Read from `KITE_HEADFUL`.
+    /// Launch a visible (headed) browser window. This is the DEFAULT so you can
+    /// watch automation as it runs. Set `KITE_HEADLESS` to run headless, which
+    /// is REQUIRED on servers, CI, and containers with no display (a headed
+    /// Chrome fails to launch there).
     pub headful: bool,
     /// Optional path to a chrome/chromium/chrome-headless-shell binary.
     pub executable: Option<String>,
@@ -92,7 +93,8 @@ impl Default for EngineConfig {
             idle_ttl: Duration::from_secs(120),
             nav_timeout: Duration::from_secs(20),
             no_sandbox: std::env::var("BROWSER_NO_SANDBOX").is_ok(),
-            headful: std::env::var("KITE_HEADFUL").is_ok(),
+            // Headed by default; KITE_HEADLESS opts into headless.
+            headful: std::env::var("KITE_HEADLESS").is_err(),
             executable: std::env::var("BROWSER_EXECUTABLE").ok(),
             context_pool_size: std::env::var("MCP_CONTEXT_POOL")
                 .ok()

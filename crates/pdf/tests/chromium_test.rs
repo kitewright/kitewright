@@ -13,6 +13,9 @@ async fn renders_html_with_footer_and_margins() {
         eprintln!("SKIP: browser e2e disabled (KITE_SKIP_BROWSER_E2E set)");
         return;
     }
+    // Kite renders headed by default; force headless for the test (no display on
+    // CI, no window popping up locally).
+    std::env::set_var("KITE_HEADLESS", "1");
     let html = include_str!("../testdata/invoice.html").to_string();
     // Reuse the repo-level footer fixture used by the invoice-service flow.
     let footer = include_str!("../../../testdata/invoice-footer.html").to_string();

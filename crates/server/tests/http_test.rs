@@ -76,6 +76,9 @@ async fn start_server_with(port: u16, envs: &[(&str, &str)]) -> ServerGuard {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_kite"));
     cmd.env("MCP_HTTP_BIND", format!("127.0.0.1:{port}"))
         .env("BROWSER_NO_SANDBOX", "1")
+        // Kite launches headed by default; tests must run headless (no display
+        // on CI, and no windows popping up during a local test run).
+        .env("KITE_HEADLESS", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     for (k, v) in envs {

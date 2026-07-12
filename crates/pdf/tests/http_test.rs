@@ -90,6 +90,8 @@ async fn chromium_render_returns_pdf() {
         eprintln!("SKIP: browser e2e disabled (KITE_SKIP_BROWSER_E2E set)");
         return;
     }
+    // Kite renders headed by default; force headless for the test.
+    std::env::set_var("KITE_HEADLESS", "1");
     let (base, state) = start().await;
     let resp = reqwest::Client::new()
         .post(format!("{base}/render"))

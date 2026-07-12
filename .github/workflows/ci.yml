@@ -87,6 +87,8 @@ jobs:
         env:
           BROWSER_EXECUTABLE: ${{ steps.chrome.outputs.chrome-path }}
           BROWSER_NO_SANDBOX: "1"
+          # Runner has no display: kite is headed by default, so force headless.
+          KITE_HEADLESS: "1"
         run: |
           cargo test -p kitewright-engine --test engine_test -- --test-threads=1
           cargo test -p kitewright --test http_test -- --test-threads=1
