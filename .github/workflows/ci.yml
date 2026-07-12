@@ -17,6 +17,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # The workspace release build (kitewright + all three kite-pdf variants)
+      # plus debug test artifacts and the aws-lc-sys C build exhaust the stock
+      # runner disk ("No space left on device"). Reclaim ~25GB of preinstalled
+      # toolchains we don't use before building.
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force || true
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -78,6 +89,12 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo docker image prune --all --force || true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Chrome
