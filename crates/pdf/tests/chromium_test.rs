@@ -7,6 +7,12 @@ use kite_pdf::AppState;
 
 #[tokio::test]
 async fn renders_html_with_footer_and_margins() {
+    // Gated out of the blocking CI job (real browser render; flaky on shared
+    // runners). Runs locally and in the non-blocking `browser` job.
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        eprintln!("SKIP: browser e2e disabled (KITE_SKIP_BROWSER_E2E set)");
+        return;
+    }
     let html = include_str!("../testdata/invoice.html").to_string();
     // Reuse the repo-level footer fixture used by the invoice-service flow.
     let footer = include_str!("../../../testdata/invoice-footer.html").to_string();

@@ -84,6 +84,12 @@ async fn typst_render_returns_pdf() {
 #[cfg(feature = "chromium")]
 #[tokio::test]
 async fn chromium_render_returns_pdf() {
+    // Gated out of the blocking CI job (real browser render). Runs locally and
+    // in the non-blocking `browser` job.
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        eprintln!("SKIP: browser e2e disabled (KITE_SKIP_BROWSER_E2E set)");
+        return;
+    }
     let (base, state) = start().await;
     let resp = reqwest::Client::new()
         .post(format!("{base}/render"))

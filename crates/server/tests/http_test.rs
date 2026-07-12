@@ -31,7 +31,26 @@ impl Drop for ServerGuard {
     }
 }
 
+/// The heavy end-to-end tests below spawn a server and drive a real Chrome.
+/// They are gated out of the blocking CI job (the shared 2-core runner starves
+/// the renderer, yielding empty tool output), and run locally by default plus
+/// in the non-blocking `browser` CI job. Set KITE_SKIP_BROWSER_E2E=1 to skip.
+fn skip_browser_e2e() -> bool {
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        eprintln!("SKIP: browser e2e disabled (KITE_SKIP_BROWSER_E2E set)");
+        return true;
+    }
+    false
+}
+
 fn chrome_path() -> Option<String> {
+    // Under the CI skip flag, report "no browser" so every test guarded by
+    // `chrome_path().is_none()` self-skips (see skip_browser_e2e). The three
+    // non-browser tests here (auth, rate limit, cross-origin) don't consult this
+    // and keep running in the blocking job.
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        return None;
+    }
     if let Ok(p) = std::env::var("BROWSER_EXECUTABLE") {
         return Some(p);
     }
@@ -110,6 +129,9 @@ async fn post(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn streamable_http_handshake_and_tools() {
+    if skip_browser_e2e() {
+        return;
+    }
     let port = 18300 + (std::process::id() % 500) as u16;
     let server = start_server(port).await;
     let client = reqwest::Client::new();

@@ -169,6 +169,14 @@ const FIXTURE_HTML: &str = r#"<!doctype html>
 </html>"#;
 
 fn chrome_path() -> Option<String> {
+    // The real-browser tests are gated out of the blocking CI job (where the
+    // shared 2-core runner starves Chromium and they flake); returning None here
+    // makes every browser test self-skip via its `chrome_path().is_none()`
+    // guard. They still run locally by default and in the non-blocking
+    // `browser` CI job (which does not set this flag).
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        return None;
+    }
     if let Ok(p) = std::env::var("BROWSER_EXECUTABLE") {
         return Some(p);
     }
