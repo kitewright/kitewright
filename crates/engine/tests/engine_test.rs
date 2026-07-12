@@ -169,6 +169,14 @@ const FIXTURE_HTML: &str = r#"<!doctype html>
 </html>"#;
 
 fn chrome_path() -> Option<String> {
+    // The real-browser tests are gated out of the blocking CI job (where the
+    // shared 2-core runner starves Chromium and they flake); returning None here
+    // makes every browser test self-skip via its `chrome_path().is_none()`
+    // guard. They still run locally by default and in the non-blocking
+    // `browser` CI job (which does not set this flag).
+    if std::env::var("KITE_SKIP_BROWSER_E2E").is_ok() {
+        return None;
+    }
     if let Ok(p) = std::env::var("BROWSER_EXECUTABLE") {
         return Some(p);
     }
@@ -232,6 +240,7 @@ fn test_engine_cfg(idle_ttl: Duration, context_pool_size: usize) -> Engine {
         idle_ttl,
         nav_timeout: Duration::from_secs(20),
         no_sandbox: true,
+        headful: false,
         executable: chrome_path(),
         context_pool_size,
         cache_dir: std::env::temp_dir().join(unique),
@@ -365,7 +374,9 @@ async fn session_page_persists_and_supports_interaction() {
     // --- page-level key press reaches the document listener ---
     session.press_key("Escape").await.expect("press_key failed");
     session
-        .wait_for(None, Some("last-key:Escape"), Some(3_000))
+        // Generous timeout: on a heavily-loaded CI runner the keypress →
+        // document listener → DOM update → CDP read-back round trip can be slow.
+        .wait_for(None, Some("last-key:Escape"), Some(15_000))
         .await
         .expect("Escape key did not reach the page");
 
@@ -1253,6 +1264,7 @@ async fn connection_prewarm_noops_when_unset_and_warms_when_set() {
         idle_ttl: Duration::from_secs(60),
         nav_timeout: Duration::from_secs(20),
         no_sandbox: true,
+        headful: false,
         executable: chrome_path(),
         context_pool_size: 1,
         cache_dir: std::env::temp_dir().join(format!("kitewright-test-pw-{}", std::process::id())),
@@ -1290,6 +1302,7 @@ async fn shared_cache_dir_is_created_and_reused() {
         idle_ttl: Duration::from_secs(60),
         nav_timeout: Duration::from_secs(20),
         no_sandbox: true,
+        headful: false,
         executable: chrome_path(),
         context_pool_size: 1,
         cache_dir: cache_dir.clone(),

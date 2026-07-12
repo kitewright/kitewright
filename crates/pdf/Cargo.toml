@@ -1,0 +1,38 @@
+[package]
+name = "kite-pdf"
+description = "kite-pdf — a focused HTML/Typst → PDF render service and CLI. Dual-backend: Chromium (HTML→PDF, via kitewright-engine) and Typst (browser-free typesetting)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kite-pdf"
+path = "src/main.rs"
+
+[features]
+default = ["chromium", "typst"]
+# HTML→PDF via the shared kitewright-engine (launches headless Chromium).
+chromium = ["dep:kitewright-engine"]
+# Browser-free typesetting backend (embeds the Typst compiler + bundled fonts).
+typst = ["dep:typst", "dep:typst-pdf", "dep:typst-assets", "dep:comemo"]
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+axum = "0.8"
+
+# Chromium backend (optional; only compiled with the `chromium` feature).
+kitewright-engine = { path = "../engine", optional = true }
+
+# Typst backend (optional; only compiled with the `typst` feature).
+typst = { version = "0.15", optional = true }
+typst-pdf = { version = "0.15", optional = true }
+typst-assets = { version = "0.15", features = ["fonts"], optional = true }
+comemo = { version = "0.5", optional = true }
+
+[dev-dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }

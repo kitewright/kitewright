@@ -42,8 +42,19 @@ use tokio::task::JoinHandle;
 
 const MAX_TEXT_CHARS: usize = 20_000;
 const MAX_SNAPSHOT_CHARS: usize = 15_000;
+/// Recursion-depth cap for the accessibility-tree walk (stack-overflow guard on
+/// pathologically deep pages). Far deeper than any real document nests.
+const MAX_AX_DEPTH: usize = 256;
 const MAX_MARKDOWN_CHARS: usize = 20_000;
 const WAIT_FOR_POLL: Duration = Duration::from_millis(100);
+/// Upper bound on how long a single poll's CDP evaluation may block before it is
+/// abandoned and retried. A loaded machine can stall one `Runtime.evaluate` for
+/// tens of seconds (the CDP request timeout); without this cap a single stuck
+/// poll would blow the caller's whole wait window.
+const WAIT_FOR_POLL_BUDGET: Duration = Duration::from_secs(3);
+/// Floor for the per-poll budget so the last poll before the deadline still gets
+/// a fair chance to answer.
+const WAIT_FOR_MIN_BUDGET: Duration = Duration::from_millis(250);
 /// Default timeout for [`BrowserSession::wait_for`].
 pub const WAIT_FOR_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// Hard cap for [`BrowserSession::wait_for`] so a tool call can never park an
@@ -64,6 +75,11 @@ pub struct EngineConfig {
     pub nav_timeout: Duration,
     /// Pass --no-sandbox (required in most containers).
     pub no_sandbox: bool,
+    /// Launch a visible (headed) browser window. This is the DEFAULT so you can
+    /// watch automation as it runs. Set `KITE_HEADLESS` to run headless, which
+    /// is REQUIRED on servers, CI, and containers with no display (a headed
+    /// Chrome fails to launch there).
+    pub headful: bool,
     /// Optional path to a chrome/chromium/chrome-headless-shell binary.
     pub executable: Option<String>,
     /// How many pre-warmed blank browser contexts to keep ready so a NEW
@@ -84,15 +100,31 @@ pub struct EngineConfig {
 
 impl Default for EngineConfig {
     fn default() -> Self {
+        // Headed by default; KITE_HEADLESS opts into headless.
+        let headful = std::env::var("KITE_HEADLESS").is_err();
         Self {
-            idle_ttl: Duration::from_secs(120),
+            // Headless (server) reaps aggressively to free ~300MB. Headed is
+            // driven by a human at human pace — with pauses to read, type
+            // credentials, or coordinate — so a 120s reap would kill the window
+            // mid-task; give it a much longer idle window.
+            idle_ttl: if headful {
+                Duration::from_secs(1800)
+            } else {
+                Duration::from_secs(120)
+            },
             nav_timeout: Duration::from_secs(20),
             no_sandbox: std::env::var("BROWSER_NO_SANDBOX").is_ok(),
+            headful,
             executable: std::env::var("BROWSER_EXECUTABLE").ok(),
+            // The warm-context pool holds blank pages open for instant new
+            // sessions — invisible in headless, but in HEADED mode each pooled
+            // page is a visible window, so one tool call would pop several
+            // windows. Disable the pool when headed unless the user explicitly
+            // sets MCP_CONTEXT_POOL, so one call opens exactly one window.
             context_pool_size: std::env::var("MCP_CONTEXT_POOL")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(2),
+                .unwrap_or(if headful { 0 } else { 2 }),
             cache_dir: std::env::var("KITE_CACHE_DIR")
                 .ok()
                 .filter(|s| !s.is_empty())
@@ -193,17 +225,64 @@ fn resolve_executable(explicit: Option<&str>) -> Option<String> {
     if let Some(e) = explicit {
         return Some(e.to_string());
     }
-    // Match chromiumoxide's default detection so behavior is unchanged when a
-    // system browser exists; skip Edge to prefer a real Chrome/Chromium.
+    // Prefer a real, directly-launchable browser in a known location over
+    // chromiumoxide's own detection. On macOS that detection can return
+    // Homebrew's `chromium.wrapper.sh` shim: the file exists (so an existence
+    // check passes) but it `exec`s `/Applications/Chromium.app`, which may have
+    // been uninstalled — launching then fails with "No such file or directory".
+    // Our curated paths point straight at the executable, so try them first,
+    // then a `kite install`-managed build.
+    if let Some(p) = known_system_browser().or_else(find_installed_browser) {
+        return Some(p.to_string_lossy().into_owned());
+    }
+    // Last resort: chromiumoxide's detection — but only trust a path that both
+    // exists and is a real binary, never a shell shim that may point at a
+    // browser that is no longer installed.
     let opts = chromiumoxide::detection::DetectionOptions {
         msedge: false,
         unstable: false,
     };
-    if chromiumoxide::detection::default_executable(opts).is_ok() {
-        // Let chromiumoxide detect it (keeps the previous code path exactly).
-        return None;
+    if let Ok(detected) = chromiumoxide::detection::default_executable(opts) {
+        if detected.exists() && !is_shell_wrapper(&detected) {
+            return Some(detected.to_string_lossy().into_owned());
+        }
     }
-    find_installed_browser().map(|p| p.to_string_lossy().into_owned())
+    None
+}
+
+/// True if `path` looks like a shell shim rather than a real browser executable
+/// (e.g. Homebrew's `chromium.wrapper.sh`), which can `exec` a browser that is
+/// no longer installed and so must not be trusted from auto-detection.
+fn is_shell_wrapper(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e == "sh") || path.to_string_lossy().contains("Caskroom")
+}
+
+/// Standard install locations for a Chromium-family browser, checked when
+/// chromiumoxide's own detection misses or returns a path that doesn't exist.
+const SYSTEM_BROWSER_PATHS: &[&str] = &[
+    // macOS
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    // Linux
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/snap/bin/chromium",
+    "/opt/google/chrome/chrome",
+    // Windows
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+];
+
+fn known_system_browser() -> Option<PathBuf> {
+    first_existing(SYSTEM_BROWSER_PATHS)
+}
+
+fn first_existing(paths: &[&str]) -> Option<PathBuf> {
+    paths.iter().map(PathBuf::from).find(|p| p.exists())
 }
 
 /// URL patterns blocked in "lite" mode via CDP `Network.setBlockedURLs`
@@ -381,6 +460,17 @@ impl Engine {
         self.handle.lock().await.is_some()
     }
 
+    /// Refresh the idle-reaper clock mid-operation. Long single ops (a polling
+    /// `wait_for`/`assert`) otherwise only touch `last_used` once at the start,
+    /// so a short `idle_ttl` could reap the browser out from under an in-flight
+    /// wait. Callers already hold the session state lock; taking the handle lock
+    /// here keeps the established state→handle order.
+    pub(crate) async fn touch_activity(&self) {
+        if let Some(h) = self.handle.lock().await.as_mut() {
+            h.last_used = Instant::now();
+        }
+    }
+
     /// Number of pre-warmed contexts currently held in the warm pool (0 when
     /// the browser is not running). Exposed for observability and tests.
     pub async fn pooled_context_count(&self) -> usize {
@@ -452,8 +542,26 @@ impl Engine {
     // -- internals -----------------------------------------------------------
 
     async fn launch_if_needed(&self, guard: &mut Option<BrowserHandle>) -> Result<()> {
-        if guard.is_some() {
-            return Ok(());
+        // Present isn't the same as alive. The browser can die on its own — a
+        // crash, an OOM, the user closing the headed window, an external kill —
+        // WITHOUT the reaper running, leaving a handle whose CDP channel is dead;
+        // reusing it makes every call fail with "receiver is gone". (The handler
+        // stream keeps yielding Err rather than ending on connection loss, so
+        // `event_task.is_finished()` is NOT a reliable death signal.) Probe it
+        // with a cheap CDP call under a short budget; if it doesn't answer,
+        // discard the corpse and fall through to relaunch.
+        if let Some(h) = guard.as_ref() {
+            let responsive = matches!(
+                tokio::time::timeout(Duration::from_secs(2), h.browser.version()).await,
+                Ok(Ok(_))
+            );
+            if responsive {
+                return Ok(());
+            }
+            tracing::warn!("browser unresponsive (crash / closed window / kill); relaunching");
+            if let Some(dead) = guard.take() {
+                close_handle(dead, "browser died").await;
+            }
         }
         let started = Instant::now();
         let seq = LAUNCH_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -479,33 +587,43 @@ impl Engine {
         // cache instead of the network. Best-effort: a create failure just
         // means Chromium falls back to its default in-profile cache.
         let _ = tokio::fs::create_dir_all(&self.config.cache_dir).await;
-        let disk_cache_arg = format!("--disk-cache-dir={}", self.config.cache_dir.display());
+        // chromiumoxide renders each arg as `--{key}`, so keys MUST be bare (no
+        // leading `--`) — passing `--no-sandbox` yields `----no-sandbox`, which
+        // Chrome ignores. That silently defeated every flag here: most notably
+        // `no-sandbox` (fatal "No usable sandbox!" on Linux CI/containers) and
+        // `disable-dev-shm-usage`.
+        let disk_cache_arg = format!("disk-cache-dir={}", self.config.cache_dir.display());
         let mut args: Vec<String> = [
-            "--disable-gpu",
-            "--disable-extensions",
-            "--mute-audio",
+            "disable-gpu",
+            "disable-extensions",
+            "mute-audio",
             // Write shared memory to /tmp instead of /dev/shm. On Linux CI and in
             // containers /dev/shm is often tiny (~64MB), which crashes Chromium's
             // renderer mid-navigation (seen as empty/timed-out CDP responses).
             // Harmless elsewhere.
-            "--disable-dev-shm-usage",
+            "disable-dev-shm-usage",
             // Skip startup work that only matters for interactive Chrome:
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-background-networking",
-            "--disable-component-update",
-            "--disable-sync",
-            "--disable-default-apps",
-            "--hide-scrollbars",
+            "no-first-run",
+            "no-default-browser-check",
+            "disable-background-networking",
+            "disable-component-update",
+            "disable-sync",
+            "disable-default-apps",
+            "hide-scrollbars",
         ]
         .iter()
         .map(|s| s.to_string())
         .collect();
         args.push(disk_cache_arg);
         if self.config.no_sandbox {
-            args.push("--no-sandbox".to_string());
+            args.push("no-sandbox".to_string());
         }
         builder = builder.args(args);
+        // Headed (visible window) mode is opt-in via KITE_HEADFUL; the default
+        // is headless (correct for agents/servers/CI).
+        if self.config.headful {
+            builder = builder.with_head();
+        }
         let config = builder.build().map_err(|e| anyhow::anyhow!(e))?;
 
         let (browser, mut handler) = Browser::launch(config).await.context(
@@ -1189,15 +1307,14 @@ impl BrowserSession {
             .await
             .context("failed to subscribe to dialog events")?;
         let page_for_task = page.clone();
-        let behavior = Arc::clone(&self.shared);
+        // Weak, not Arc: a strong ref here would pin the session and block Drop
+        // (which closes the page), leaking the context+page. Upgrade per event.
+        let weak = Arc::downgrade(&self.shared);
         // The stream ends when the page closes, so the task exits with the page.
         tokio::spawn(async move {
             while events.next().await.is_some() {
-                let desired = behavior
-                    .dialog
-                    .lock()
-                    .expect("dialog mutex poisoned")
-                    .clone();
+                let Some(shared) = weak.upgrade() else { break };
+                let desired = shared.dialog.lock().expect("dialog mutex poisoned").clone();
                 if let Some(b) = desired {
                     let mut params = HandleJavaScriptDialogParams::new(b.accept);
                     params.prompt_text = b.prompt_text;
@@ -1315,21 +1432,22 @@ impl BrowserSession {
             if should_exist { "present" } else { "absent" }
         );
         let started = Instant::now();
+        // Last successfully-evaluated presence; a transient CDP failure just
+        // keeps polling (assert never errors on a failed condition, and a poll
+        // hiccup is not a condition result).
+        let mut present = false;
         loop {
-            let present: bool = page
-                .evaluate(js.clone())
-                .await
-                .context("assert condition evaluation failed")?
-                .into_value()
-                .unwrap_or(false);
-            // `present == should_exist` is the passing state for both modes.
-            if present == should_exist {
-                return Ok(AssertOutcome {
-                    passed: true,
-                    checked,
-                    found: present,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                });
+            if let Ok(v) = poll_condition(&page, &js, poll_budget(timeout, started)).await {
+                present = v;
+                // `present == should_exist` is the passing state for both modes.
+                if present == should_exist {
+                    return Ok(AssertOutcome {
+                        passed: true,
+                        checked,
+                        found: present,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    });
+                }
             }
             if started.elapsed() >= timeout {
                 return Ok(AssertOutcome {
@@ -1339,6 +1457,8 @@ impl BrowserSession {
                     elapsed_ms: started.elapsed().as_millis() as u64,
                 });
             }
+            // Keep the browser from being idle-reaped mid-assert.
+            self.shared.engine.touch_activity().await;
             tokio::time::sleep(WAIT_FOR_POLL).await;
         }
     }
@@ -1385,23 +1505,34 @@ impl BrowserSession {
         let js = conds.join(" && ");
         let started = Instant::now();
         loop {
-            let hit: bool = page
-                .evaluate(js.clone())
-                .await
-                .context("wait_for condition evaluation failed")?
-                .into_value()
-                .unwrap_or(false);
-            if hit {
+            // A single transient CDP hiccup (e.g. "Request timed out" on a
+            // loaded runner) must NOT abort the wait — bound the poll, treat any
+            // failure as "not yet satisfied", and keep polling until the
+            // deadline. Surface the last poll's error only if we actually time
+            // out.
+            let outcome = poll_condition(&page, &js, poll_budget(timeout, started)).await;
+            if matches!(outcome, Ok(true)) {
                 return Ok(started.elapsed().as_millis() as u64);
             }
             if started.elapsed() >= timeout {
-                bail!(
-                    "wait_for timed out after {}ms (selector: {:?}, text: {:?})",
-                    timeout.as_millis(),
-                    selector,
-                    text
-                );
+                return Err(match outcome {
+                    Err(e) => anyhow::anyhow!(
+                        "wait_for timed out after {}ms (selector: {:?}, text: {:?}); last evaluation error: {}",
+                        timeout.as_millis(),
+                        selector,
+                        text,
+                        e
+                    ),
+                    Ok(_) => anyhow::anyhow!(
+                        "wait_for timed out after {}ms (selector: {:?}, text: {:?})",
+                        timeout.as_millis(),
+                        selector,
+                        text
+                    ),
+                });
             }
+            // Keep the browser from being idle-reaped mid-wait.
+            self.shared.engine.touch_activity().await;
             tokio::time::sleep(WAIT_FOR_POLL).await;
         }
     }
@@ -1516,10 +1647,18 @@ impl BrowserSession {
             page.execute(NetworkEnableParams::default()),
         );
 
+        // The tasks below hold a WEAK ref to the session, upgrading only to push
+        // an event. Holding a strong `Arc` would pin `SessionShared` forever —
+        // each stream ends only when the page closes, but the page closes in
+        // `Drop`, which can't run while a strong ref is parked here. That cycle
+        // leaked a context + page per session (Drop never fired). With a Weak,
+        // the last real Arc dropping lets Drop run, which closes the page and
+        // ends these streams.
         if let Ok(mut events) = page.event_listener::<EventConsoleApiCalled>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.console,
                         ConsoleMessage {
@@ -1531,9 +1670,10 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventEntryAdded>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.console,
                         ConsoleMessage {
@@ -1545,9 +1685,10 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventRequestWillBeSent>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     push_capped(
                         &shared.network,
                         NetworkRequest {
@@ -1562,12 +1703,16 @@ impl BrowserSession {
             });
         }
         if let Ok(mut events) = page.event_listener::<EventResponseReceived>().await {
-            let shared = Arc::clone(&self.shared);
+            let weak = Arc::downgrade(&self.shared);
             tokio::spawn(async move {
                 while let Some(e) = events.next().await {
+                    let Some(shared) = weak.upgrade() else { break };
                     let rid = e.request_id.inner();
                     let status = e.response.status;
-                    if let Ok(mut buf) = shared.network.lock() {
+                    // Named binding (drops before `shared`) so the guard can't
+                    // outlive the per-iteration upgraded Arc.
+                    let locked = shared.network.lock();
+                    if let Ok(mut buf) = locked {
                         // Fill in the status on the most recent matching request.
                         if let Some(item) = buf.iter_mut().rev().find(|r| &r.request_id == rid) {
                             item.status = Some(status);
@@ -1582,6 +1727,7 @@ impl BrowserSession {
     /// `lite` toggles resource blocking for this navigation (applied before the
     /// load so blocked resources are never fetched).
     async fn goto(&self, st: &mut SessionState, page: &Page, url: &str, lite: bool) -> Result<()> {
+        validate_navigation_url(url)?;
         apply_blocking(page, lite).await;
         tokio::time::timeout(self.shared.engine.config.nav_timeout, page.goto(url))
             .await
@@ -2699,6 +2845,12 @@ fn render_ax_node(
     if *truncated {
         return;
     }
+    // Bound recursion independently of the output cap: skipped structural nodes
+    // produce no text yet still recurse, so a pathologically deep AX tree could
+    // overflow the stack even while under MAX_SNAPSHOT_CHARS.
+    if depth > MAX_AX_DEPTH {
+        return;
+    }
     if out.len() >= MAX_SNAPSHOT_CHARS {
         *truncated = true;
         return;
@@ -2839,6 +2991,66 @@ fn serde_json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+/// Guard navigation against schemes that read local files or reach non-web
+/// resources. http/https/about/data/blob pass; `file:` is allowed only when
+/// `KITE_ALLOW_FILE_URLS` is set (off by default, so an agent can't exfiltrate
+/// local files like `file:///etc/passwd`); anything else (javascript:, chrome:,
+/// view-source:, …) is rejected. A URL with no parseable scheme (bare host /
+/// relative) is left for the browser to resolve.
+fn validate_navigation_url(url: &str) -> Result<()> {
+    let scheme = match url.split_once(':') {
+        Some((s, _))
+            if !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')) =>
+        {
+            s.to_ascii_lowercase()
+        }
+        _ => return Ok(()),
+    };
+    match scheme.as_str() {
+        "http" | "https" | "about" | "data" | "blob" => Ok(()),
+        "file" => {
+            if std::env::var("KITE_ALLOW_FILE_URLS").is_ok() {
+                Ok(())
+            } else {
+                bail!(
+                    "file:// navigation is disabled by default; set KITE_ALLOW_FILE_URLS=1 to allow local-file access"
+                )
+            }
+        }
+        other => bail!("navigation to {other}: URLs is not allowed"),
+    }
+}
+
+/// Per-poll CDP evaluation budget for [`BrowserSession::wait_for`] /
+/// [`BrowserSession::assert`]: the time still left before the deadline, capped
+/// at [`WAIT_FOR_POLL_BUDGET`] and floored at [`WAIT_FOR_MIN_BUDGET`] so a
+/// single stuck evaluation is abandoned and retried rather than consuming the
+/// whole wait.
+fn poll_budget(timeout: Duration, started: Instant) -> Duration {
+    timeout
+        .saturating_sub(started.elapsed())
+        .min(WAIT_FOR_POLL_BUDGET)
+        .max(WAIT_FOR_MIN_BUDGET)
+}
+
+/// Evaluate a boolean poll condition once, bounded by `budget`. A timeout or CDP
+/// error is returned as `Err` so the caller can treat it as "not yet satisfied"
+/// and keep polling, instead of aborting the whole wait on one transient hiccup.
+async fn poll_condition(page: &Page, js: &str, budget: Duration) -> Result<bool> {
+    let value = tokio::time::timeout(budget, page.evaluate(js.to_string()))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "condition evaluation exceeded {}ms poll budget",
+                budget.as_millis()
+            )
+        })?
+        .context("condition evaluation failed")?;
+    Ok(value.into_value().unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2905,6 +3117,38 @@ mod tests {
         assert!(version_key("120.0.0.0") > version_key("99.0.4844.51"));
         assert!(version_key("120.0.6099.109") > version_key("120.0.6099.99"));
         assert_eq!(version_key("1.2.3"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn first_existing_skips_missing_returns_present() {
+        let marker = std::env::temp_dir().join("kite-detect-existence-marker");
+        std::fs::write(&marker, b"x").unwrap();
+        let present = marker.to_str().unwrap();
+        // A bogus path first (like the orphaned /Applications/Chromium.app) must
+        // be skipped in favor of the one that actually exists.
+        assert_eq!(
+            first_existing(&["/no/such/kite/browser/path", present]),
+            Some(marker.clone())
+        );
+        assert_eq!(first_existing(&["/no/such/a", "/no/such/b"]), None);
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[test]
+    fn shell_wrapper_shims_are_rejected() {
+        // The exact shim chromiumoxide detection returns on macOS when the
+        // Homebrew Chromium cask is installed but its app was removed.
+        assert!(is_shell_wrapper(std::path::Path::new(
+            "/opt/homebrew/Caskroom/chromium/latest/chromium.wrapper.sh"
+        )));
+        assert!(is_shell_wrapper(std::path::Path::new(
+            "/some/where/launch.sh"
+        )));
+        // Real browser executables must not be flagged.
+        assert!(!is_shell_wrapper(std::path::Path::new(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        )));
+        assert!(!is_shell_wrapper(std::path::Path::new("/usr/bin/chromium")));
     }
 
     #[test]

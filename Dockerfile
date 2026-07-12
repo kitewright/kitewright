@@ -30,6 +30,7 @@ RUN apt-get update && \
 # (required in most containers, where user namespaces are unavailable).
 ENV BROWSER_EXECUTABLE=/usr/bin/chromium \
     BROWSER_NO_SANDBOX=1 \
+    KITE_HEADLESS=1 \
     MCP_HTTP_BIND=0.0.0.0:8090 \
     KITE_CACHE_DIR=/home/kite/.cache/kitewright
 
