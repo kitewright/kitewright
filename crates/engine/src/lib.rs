@@ -498,6 +498,14 @@ impl Engine {
     /// DNS+TLS+connection to that origin so the first real navigate skips the
     /// handshake. Cheap no-op when the browser is already running.
     pub async fn prewarm(&self) -> Result<()> {
+        // In headed mode, launching the browser at boot would pop a visible
+        // blank window before any task runs (the MCP server prewarms on start,
+        // so it would appear every time the client launches). Skip prewarm and
+        // launch lazily on the first real navigation — which is exactly when a
+        // headed user wants the window to appear.
+        if self.config.headful {
+            return Ok(());
+        }
         let mut guard = self.handle.lock().await;
         let was_running = guard.is_some();
         self.launch_if_needed(&mut guard).await?;
