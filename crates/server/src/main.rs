@@ -144,6 +144,14 @@ struct HoverParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct EvaluateParams {
+    /// JavaScript expression to evaluate on the current page. A promise result
+    /// is awaited and its resolved value returned. Non-serializable results
+    /// (DOM nodes, etc.) come back as null.
+    script: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct HandleDialogParams {
     /// Accept (true) or dismiss (false) the next dialog(s)
     accept: bool,
@@ -593,6 +601,17 @@ impl BrowserMcp {
     }
 
     #[tool(
+        description = "Evaluate a JavaScript expression on the current page and return its result as JSON (puppeteer's page.evaluate, via CDP Runtime.evaluate). A promise result is awaited. Use it to read computed state, extract structured data, or set values the higher-level tools can't reach. A thrown JS exception is returned as an error."
+    )]
+    async fn browser_evaluate(
+        &self,
+        Parameters(EvaluateParams { script }): Parameters<EvaluateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = self.session.evaluate(&script).await.map_err(err)?;
+        Ok(json_text(serde_json::json!({ "result": value })))
+    }
+
+    #[tool(
         description = "Arm handling of the NEXT JS dialog(s) (alert/confirm/prompt/beforeunload) on this page: auto-accept or dismiss, optionally filling a prompt. Must be called BEFORE the action that triggers the dialog (dialogs block JS). Arming persists for subsequent dialogs until changed."
     )]
     async fn browser_handle_dialog(
@@ -739,8 +758,18 @@ impl HttpGuard {
             .map(|(_, rest)| rest)
             .unwrap_or(origin);
         let host = host.split('/').next().unwrap_or(host);
-        let hostname = host.rsplit_once(':').map_or(host, |(h, _)| h);
-        matches!(hostname, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+        // Strip the port carefully: a bracketed IPv6 host ([::1]) contains
+        // colons, so only split on the LAST colon that comes after a closing
+        // bracket (or when there are no brackets at all).
+        let hostname = if host.starts_with('[') {
+            match host.split_once(']') {
+                Some((addr, _)) => addr.trim_start_matches('['),
+                None => host,
+            }
+        } else {
+            host.rsplit_once(':').map_or(host, |(h, _)| h)
+        };
+        matches!(hostname, "localhost" | "127.0.0.1" | "::1")
     }
 
     /// Fixed-window counter. Returns false when the client exceeded the limit.
@@ -886,7 +915,10 @@ async fn run_stdio() -> Result<()> {
 
 /// Serve MCP over Streamable HTTP (networked; supports many sessions + auth).
 async fn run_http() -> Result<()> {
-    let bind = std::env::var("MCP_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
+    // Default to loopback: an HTTP server with no auth token (auth is optional)
+    // must not be exposed on all interfaces by accident. Deployments that need
+    // external reach set MCP_HTTP_BIND explicitly (the Docker image does).
+    let bind = std::env::var("MCP_HTTP_BIND").unwrap_or_else(|_| "127.0.0.1:8090".to_string());
     let engine = Engine::new(EngineConfig::default());
     let engine_for_shutdown = engine.clone();
     let guard = HttpGuard::from_env();

@@ -58,9 +58,43 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path "target/${{ matrix.target }}/release/kite.exe" -DestinationPath "kite-${{ matrix.target }}.zip"
 
+      # kite-pdf ships as three build shapes of ONE crate (same binary name
+      # `kite-pdf` inside every archive; the archive name distinguishes them):
+      #   kite-pdf          — both backends (chromium + typst)
+      #   kite-pdf-chromium — HTML→PDF only (needs a browser at runtime)
+      #   kite-pdf-lite     — Typst only (browser-free)
+      - name: Build & package kite-pdf variants (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          build() {
+            name="$1"; shift
+            cargo build --release -p kite-pdf --target ${{ matrix.target }} "$@"
+            tar -czf "${name}-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" kite-pdf
+          }
+          build kite-pdf
+          build kite-pdf-chromium --no-default-features --features chromium
+          build kite-pdf-lite --no-default-features --features typst
+
+      - name: Build & package kite-pdf variants (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          function Build($name, $feat) {
+            cargo build --release -p kite-pdf --target ${{ matrix.target }} @feat
+            Compress-Archive -Path "target/${{ matrix.target }}/release/kite-pdf.exe" -DestinationPath "$name-${{ matrix.target }}.zip" -Force
+          }
+          Build "kite-pdf" @()
+          Build "kite-pdf-chromium" @("--no-default-features", "--features", "chromium")
+          Build "kite-pdf-lite" @("--no-default-features", "--features", "typst")
+
       - name: Attach to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Only one of these globs matches on any given runner.
-          files: kite-${{ matrix.target }}.*
+          # Only the matching globs exist on any given runner.
+          files: |
+            kite-${{ matrix.target }}.*
+            kite-pdf-${{ matrix.target }}.*
+            kite-pdf-chromium-${{ matrix.target }}.*
+            kite-pdf-lite-${{ matrix.target }}.*
           fail_on_unmatched_files: false

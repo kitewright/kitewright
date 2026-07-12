@@ -15,9 +15,10 @@ name: npm
 # job validates that the addon compiles on every target.
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
+  # Run on demand for validation; avoids queueing a heavy napi matrix on every
+  # push/PR (which otherwise piles up waiting for runners).
+  workflow_dispatch:
 
 defaults:
   run:

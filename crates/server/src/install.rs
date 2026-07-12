@@ -46,6 +46,13 @@ fn pick_download_url(manifest: &serde_json::Value, platform: &str) -> Option<(St
     let versions = manifest.get("versions")?.as_array()?;
     for entry in versions.iter().rev() {
         let version = entry.get("version").and_then(|v| v.as_str())?;
+        // The version string is used to build a filesystem path (version_dir),
+        // which is then remove_dir_all'd — never trust it from the manifest.
+        // Accept only a plain dotted-numeric version so a hostile/garbled
+        // manifest can't traverse (e.g. "../../..") out of the cache dir.
+        if !is_valid_version(version) {
+            continue;
+        }
         let downloads = entry
             .get("downloads")
             .and_then(|d| d.get("chrome-headless-shell"))
@@ -60,6 +67,16 @@ fn pick_download_url(manifest: &serde_json::Value, platform: &str) -> Option<(St
         }
     }
     None
+}
+
+/// A Chrome-for-Testing version is a dotted-numeric string (e.g. 131.0.6778.85).
+/// Reject anything else so an untrusted manifest value can't reach a filesystem
+/// path with `/`, `..`, or other separators.
+fn is_valid_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && !version.contains("..")
 }
 
 /// Directory a given version is extracted into.

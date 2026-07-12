@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1
+#
+# Browser-free kite-pdf: the Typst backend only. No Chromium, no system fonts —
+# fonts are bundled into the binary — so the runtime image is a tiny distroless
+# layer with just glibc/libgcc. Build from the REPO ROOT:
+#
+#   docker build -f crates/pdf/Dockerfile.lite -t kite-pdf-lite .
+#   docker run -p 8091:8091 kite-pdf-lite
+#
+# This image can render Typst templates only; requests for the chromium backend
+# return HTTP 400 ("chromium backend not compiled in this build").
+
+# ---- build stage: compile the typst-only `kite-pdf` binary -------------------
+FROM rust:1-bookworm AS build
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN cargo build --release -p kite-pdf --no-default-features --features typst && \
+    strip target/release/kite-pdf || true
+
+# ---- runtime stage: distroless (no shell, no browser, just libc) -------------
+FROM gcr.io/distroless/cc-debian12 AS runtime
+
+ENV KITE_PDF_BIND=0.0.0.0:8091
+
+COPY --from=build /src/target/release/kite-pdf /usr/local/bin/kite-pdf
+
+USER nonroot
+EXPOSE 8091
+
+ENTRYPOINT ["kite-pdf"]
