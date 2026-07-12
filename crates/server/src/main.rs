@@ -22,7 +22,10 @@ use axum::{
 use base64::Engine as _;
 use rmcp::{
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content, ErrorData as McpError, ServerCapabilities, ServerInfo},
+    model::{
+        CallToolResult, ContentBlock, ErrorData as McpError, Implementation, ServerCapabilities,
+        ServerInfo,
+    },
     schemars, tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpService,
@@ -262,7 +265,7 @@ fn err(e: anyhow::Error) -> McpError {
 }
 
 fn json_text(payload: serde_json::Value) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(
+    CallToolResult::success(vec![ContentBlock::text(
         serde_json::to_string_pretty(&payload).unwrap_or_default(),
     )])
 }
@@ -302,7 +305,7 @@ impl BrowserMcp {
             .await
             .map_err(err)?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
-        Ok(CallToolResult::success(vec![Content::image(
+        Ok(CallToolResult::success(vec![ContentBlock::image(
             b64,
             "image/png",
         )]))
@@ -341,7 +344,7 @@ impl BrowserMcp {
         } else {
             self.session.snapshot().await.map_err(err)?
         };
-        Ok(CallToolResult::success(vec![Content::text(snapshot)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(snapshot)]))
     }
 
     #[tool(
@@ -418,7 +421,7 @@ impl BrowserMcp {
             .extract_markdown(url.as_deref())
             .await
             .map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(md)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(md)]))
     }
 
     #[tool(
@@ -613,7 +616,7 @@ impl BrowserMcp {
     )]
     async fn browser_save_state(&self) -> Result<CallToolResult, McpError> {
         let state = self.session.save_state().await.map_err(err)?;
-        Ok(CallToolResult::success(vec![Content::text(state)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(state)]))
     }
 
     #[tool(
@@ -658,27 +661,22 @@ impl BrowserMcp {
     }
 }
 
-#[tool_handler]
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for BrowserMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: rmcp::model::Implementation {
-                name: "kitewright".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            instructions: Some(
+        // ServerInfo (InitializeResult) and Implementation are #[non_exhaustive]
+        // in rmcp 2.x, so build them via the constructor + builder methods
+        // rather than a struct literal.
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("kitewright", env!("CARGO_PKG_VERSION")))
+            .with_instructions(
                 "Lightweight browser automation. Each MCP session owns one persistent page \
                  (cookies isolated per session): navigate, then snapshot/click/type/wait on it. \
                  Selectors accept CSS (default), `text=<visible text>`, and \
                  `role=<role>[name=\"<accessible name>\"]`. Use browser_save_state / \
                  browser_restore_state to reuse a login across sessions, and browser_assert to \
-                 gate feature checks. The browser launches lazily and is reaped when idle."
-                    .into(),
-            ),
-            ..Default::default()
-        }
+                 gate feature checks. The browser launches lazily and is reaped when idle.",
+            )
     }
 }
 

@@ -45,12 +45,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Trivy scan (vuln + secret + misconfig)
-        uses: aquasecurity/trivy-action@0.24.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: CRITICAL,HIGH
-          exit-code: "1"
-          skip-dirs: target,bindings/node/node_modules
+        env:
+          # Use a throwaway docker config so Trivy never hits an authenticated
+          # registry when pulling its vuln DB (avoids rate-limit/401 flakes).
+          DOCKER_CONFIG: ${{ runner.temp }}/trivy-docker
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          trivy fs \
+            --scanners vuln,secret,misconfig \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --no-progress \
+            --skip-dirs target \
+            --skip-dirs bindings/node/node_modules \
+            .

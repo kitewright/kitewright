@@ -10,8 +10,8 @@ anyhow.workspace = true
 serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"] }
+chromiumoxide = { version = "0.9", default-features = false }
 futures = "0.3"
 base64 = "0.22"
 serde_json.workspace = true
-dirs = "5"
+dirs = "6"

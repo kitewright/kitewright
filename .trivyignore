@@ -1,9 +1,0 @@
-# CVE-2026-42559 — rmcp 0.16.0 Streamable HTTP transport DNS-rebinding.
-# MITIGATED at the application layer: guard_middleware validates the Origin
-# header and rejects cross-origin browser requests (see
-# crates/server/src/main.rs `HttpGuard::origin_allowed` + the
-# `cross_origin_request_is_rejected` test). A DNS-rebinding page cannot reach
-# /mcp because its browser Origin is neither loopback nor allow-listed.
-# TRACKED: remove this ignore once the crate is upgraded to rmcp >= 1.4.0
-# (a major-version migration handled as its own task).
-CVE-2026-42559

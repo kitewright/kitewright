@@ -29,14 +29,14 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rmcp = { version = "0.16", features = ["server", "transport-streamable-http-server", "transport-io"] }
+rmcp = { version = "2.2.0", features = ["server", "transport-streamable-http-server", "transport-io"] }
 axum = "0.8"
 schemars = "1"
 base64 = "0.22"
 # `kite install`: fetch the Chrome-for-Testing manifest + download a
 # chrome-headless-shell build. rustls (no system OpenSSL); minimal zip decode.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }

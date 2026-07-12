@@ -2090,22 +2090,44 @@ async fn dispatch_key(page: &Page, key: &str) -> Result<()> {
         .code(def.code)
         .windows_virtual_key_code(def.key_code)
         .native_virtual_key_code(def.key_code);
-    page.execute(
-        cmd.clone()
-            .r#type(key_down_type)
-            .build()
-            .map_err(|e| anyhow::anyhow!(e))?,
-    )
-    .await
-    .context("key down failed")?;
-    page.execute(
-        cmd.r#type(DispatchKeyEventType::KeyUp)
-            .build()
-            .map_err(|e| anyhow::anyhow!(e))?,
-    )
-    .await
-    .context("key up failed")?;
+    let down = cmd
+        .clone()
+        .r#type(key_down_type)
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let up = cmd
+        .r#type(DispatchKeyEventType::KeyUp)
+        .build()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    execute_key_event_retry(page, down, "key down").await?;
+    execute_key_event_retry(page, up, "key up").await?;
     Ok(())
+}
+
+/// Send one CDP `Input.dispatchKeyEvent`, retrying up to 3 times on a
+/// transient/timeout CDP error. The observed CI flake is a "Request timed out"
+/// on the key-up (or key-down) send on slow/loaded macOS runners, which the
+/// larger `request_timeout` alone did not eliminate. A key down/up is
+/// idempotent for the control keys agents send through here (Escape/Tab/arrows/
+/// Enter), so re-sending after a timed-out attempt is safe.
+async fn execute_key_event_retry(
+    page: &Page,
+    params: DispatchKeyEventParams,
+    what: &str,
+) -> Result<()> {
+    let mut last: Option<String> = None;
+    for attempt in 0..3 {
+        match page.execute(params.clone()).await {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                last = Some(e.to_string());
+                if attempt < 2 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+    bail!("{what} failed after retries: {}", last.unwrap_or_default())
 }
 
 // -- public result types ----------------------------------------------------------

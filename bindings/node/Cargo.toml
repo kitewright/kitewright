@@ -11,8 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 # napi4 = threadsafe fns / Promise support; tokio_rt = an addon-owned tokio
 # runtime so our async engine methods run without the caller managing one.
-napi = { version = "2", default-features = false, features = ["napi4", "tokio_rt"] }
-napi-derive = "2"
+napi = { version = "3", default-features = false, features = ["napi4", "tokio_rt"] }
+napi-derive = "3"
 kitewright-engine = { path = "../../crates/engine" }
 serde_json = "1"
 anyhow = "1"
