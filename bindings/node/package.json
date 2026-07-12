@@ -13,7 +13,15 @@
   },
   "napi": {
     "name": "kitewright-node",
-    "triples": {}
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
+      ]
+    }
   },
   "files": [
     "index.js",
@@ -22,6 +30,12 @@
     "binding.d.ts",
     "*.node"
   ],
+  "optionalDependencies": {
+    "@kitewright/node-darwin-arm64": "0.1.0",
+    "@kitewright/node-darwin-x64": "0.1.0",
+    "@kitewright/node-linux-x64-gnu": "0.1.0",
+    "@kitewright/node-win32-x64-msvc": "0.1.0"
+  },
   "scripts": {
     "build": "napi build --release --js binding.js --dts binding.d.ts",
     "build:debug": "napi build --js binding.js --dts binding.d.ts",

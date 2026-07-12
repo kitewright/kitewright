@@ -105,6 +105,107 @@ impl Default for EngineConfig {
     }
 }
 
+// -- browser install cache (shared with `kite install`) -----------------------
+
+/// Basename of the `chrome-headless-shell` binary on this platform.
+pub fn headless_shell_binary_name() -> &'static str {
+    if cfg!(windows) {
+        "chrome-headless-shell.exe"
+    } else {
+        "chrome-headless-shell"
+    }
+}
+
+/// Pure cache-root resolution, split out so it can be unit-tested without
+/// touching the process environment. `kite_cache_dir` is `$KITE_CACHE_DIR`,
+/// `platform_cache` is the OS cache dir (`dirs::cache_dir()`).
+fn cache_root(kite_cache_dir: Option<PathBuf>, platform_cache: Option<PathBuf>) -> PathBuf {
+    let base = kite_cache_dir
+        .filter(|p| !p.as_os_str().is_empty())
+        .or(platform_cache)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("kitewright").join("chrome-headless-shell")
+}
+
+/// Directory under which `kite install` places downloaded
+/// `chrome-headless-shell` builds (one sub-directory per version), and where
+/// the engine looks for one when no system Chrome is found. Honors
+/// `$KITE_CACHE_DIR`, else the platform cache dir, else the temp dir.
+pub fn install_cache_dir() -> PathBuf {
+    cache_root(
+        std::env::var_os("KITE_CACHE_DIR").map(PathBuf::from),
+        dirs::cache_dir(),
+    )
+}
+
+/// Compare two Chrome version strings ("120.0.6099.109") numerically,
+/// component by component, so "120.0.0.0" sorts after "99.0.0.0".
+fn version_key(v: &str) -> Vec<u64> {
+    v.split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+/// Scan the install cache for a downloaded `chrome-headless-shell` binary,
+/// returning the newest version's binary path if one is present. The layout is
+/// `<cache>/<version>/chrome-headless-shell-<platform>/chrome-headless-shell`.
+pub fn find_installed_browser() -> Option<PathBuf> {
+    find_installed_browser_in(&install_cache_dir())
+}
+
+/// Testable core of [`find_installed_browser`]: scan `root` for version dirs.
+fn find_installed_browser_in(root: &std::path::Path) -> Option<PathBuf> {
+    let bin = headless_shell_binary_name();
+    let mut versions: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_dir())
+        .collect();
+    // Newest version first.
+    versions.sort_by(|a, b| {
+        let ka = a.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        let kb = b.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+        version_key(kb).cmp(&version_key(ka))
+    });
+    for ver_dir in versions {
+        // Binary directly under the version dir, or nested one level (the CfT
+        // zip extracts a `chrome-headless-shell-<platform>/` folder).
+        let direct = ver_dir.join(bin);
+        if direct.is_file() {
+            return Some(direct);
+        }
+        if let Ok(entries) = std::fs::read_dir(&ver_dir) {
+            for entry in entries.flatten() {
+                let cand = entry.path().join(bin);
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the Chromium executable to launch: an explicit `BROWSER_EXECUTABLE`
+/// wins; otherwise prefer a system Chrome/Chromium (chromiumoxide's own
+/// detection); only if none is found do we fall back to a `kite install`-managed
+/// build in the install cache. Returns `None` when nothing is found, in which
+/// case [`chromiumoxide::browser::BrowserConfig`] surfaces its own error.
+fn resolve_executable(explicit: Option<&str>) -> Option<String> {
+    if let Some(e) = explicit {
+        return Some(e.to_string());
+    }
+    // Match chromiumoxide's default detection so behavior is unchanged when a
+    // system browser exists; skip Edge to prefer a real Chrome/Chromium.
+    let opts = chromiumoxide::detection::DetectionOptions {
+        msedge: false,
+        unstable: false,
+    };
+    if chromiumoxide::detection::default_executable(opts).is_ok() {
+        // Let chromiumoxide detect it (keeps the previous code path exactly).
+        return None;
+    }
+    find_installed_browser().map(|p| p.to_string_lossy().into_owned())
+}
+
 /// URL patterns blocked in "lite" mode via CDP `Network.setBlockedURLs`
 /// (wildcards per CDP semantics). Two groups: heavy resource types matched by
 /// file extension (image/media/font — irrelevant to text extraction), and
@@ -370,7 +471,7 @@ impl Engine {
         let mut builder = BrowserConfig::builder()
             .user_data_dir(&data_dir)
             .request_timeout(Duration::from_secs(30));
-        if let Some(exe) = &self.config.executable {
+        if let Some(exe) = resolve_executable(self.config.executable.as_deref()) {
             builder = builder.chrome_executable(exe);
         }
         // Shared on-disk HTTP cache, stable across launches so repeat asset
@@ -2751,5 +2852,53 @@ mod tests {
         assert_eq!(css_len_to_inches(None), None);
         assert_eq!(css_len_to_inches(Some("")), None);
         assert_eq!(css_len_to_inches(Some("auto")), None);
+    }
+
+    #[test]
+    fn cache_root_prefers_kite_cache_dir() {
+        let root = cache_root(
+            Some(PathBuf::from("/custom/cache")),
+            Some(PathBuf::from("/os/cache")),
+        );
+        assert_eq!(
+            root,
+            PathBuf::from("/custom/cache/kitewright/chrome-headless-shell")
+        );
+        // Empty KITE_CACHE_DIR falls through to the platform cache dir.
+        let root = cache_root(Some(PathBuf::from("")), Some(PathBuf::from("/os/cache")));
+        assert_eq!(
+            root,
+            PathBuf::from("/os/cache/kitewright/chrome-headless-shell")
+        );
+    }
+
+    #[test]
+    fn version_key_orders_numerically() {
+        // Lexical sort would put "120" before "99"; numeric must not.
+        assert!(version_key("120.0.0.0") > version_key("99.0.4844.51"));
+        assert!(version_key("120.0.6099.109") > version_key("120.0.6099.99"));
+        assert_eq!(version_key("1.2.3"), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn find_installed_browser_picks_newest_version() {
+        let tmp = std::env::temp_dir().join(format!("kw-install-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let bin = headless_shell_binary_name();
+        // Two versions, binary nested under a platform folder in the newer one.
+        let older = tmp.join("99.0.4844.51");
+        std::fs::create_dir_all(&older).unwrap();
+        std::fs::write(older.join(bin), b"old").unwrap();
+        let newer = tmp.join("120.0.6099.109").join("chrome-headless-shell-x64");
+        std::fs::create_dir_all(&newer).unwrap();
+        std::fs::write(newer.join(bin), b"new").unwrap();
+
+        let found = find_installed_browser_in(&tmp).expect("should find a binary");
+        assert!(found.starts_with(tmp.join("120.0.6099.109")));
+        assert_eq!(found.file_name().unwrap().to_str().unwrap(), bin);
+
+        // Empty / missing dir → None.
+        assert!(find_installed_browser_in(&tmp.join("nope")).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

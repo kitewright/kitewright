@@ -32,6 +32,8 @@ use rmcp::{
 
 use kitewright_engine::{BrowserSession, Engine, EngineConfig, PdfOptions};
 
+mod install;
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct NavigateParams {
     /// URL to open
@@ -840,6 +842,13 @@ async fn main() -> Result<()> {
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
+
+    // `kite install`: download a headless Chromium into the cache and exit
+    // (never starts a server). Must be the first positional argument.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("install") {
+        return install::run(&args[1..]).await;
+    }
 
     // stdio transport (local, no server) vs Streamable HTTP (networked, default).
     // Local MCP clients (Claude Desktop, Cursor, Claude Code) spawn the binary

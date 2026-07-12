@@ -1,0 +1,66 @@
+name: Release
+
+# Build prebuilt `kite` binaries for each platform and attach them to the
+# GitHub Release when a version tag is pushed. The asset names
+# (`kite-<target>.tar.gz` / `.zip`) match the `[package.metadata.binstall]`
+# templates in crates/server/Cargo.toml, so `cargo binstall kitewright` works.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Native arm64 build on GitHub's arm64 Linux runner (no cross toolchain
+          # needed). If that runner label is unavailable to your org, drop this
+          # entry or switch to a cross-compilation step.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release -p kitewright --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        run: tar -czf "kite-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" kite
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/kite.exe" -DestinationPath "kite-${{ matrix.target }}.zip"
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Only one of these globs matches on any given runner.
+          files: kite-${{ matrix.target }}.*
+          fail_on_unmatched_files: false

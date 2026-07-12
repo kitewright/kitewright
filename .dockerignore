@@ -1,0 +1,18 @@
+# Build artifacts (rebuilt inside the image).
+target
+**/target
+
+# The napi Node addon is built separately and is not part of the `kite` build.
+bindings/node/node_modules
+bindings/node/target
+bindings/node/*.node
+
+# VCS / CI / editor noise.
+.git
+.github
+.gitignore
+
+# Docs and local files not needed for the build.
+*.md
+!README.md
+testdata

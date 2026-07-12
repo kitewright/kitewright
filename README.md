@@ -50,19 +50,70 @@ bindings/
 
 Each MCP session owns one persistent page inside its own Chromium browser context (cookie isolation between agents): log in once, keep clicking. The page and context are closed when the session ends; the browser itself is still reaped after the idle TTL and transparently relaunched on the next call.
 
-## Quick start
+## Install
 
-Requires a Chromium/Chrome on the machine (or set `BROWSER_EXECUTABLE`).
+Kitewright is a single static binary named `kite`. Pick whichever is easiest:
 
 ```bash
-cargo run --release -p kitewright
+# Prebuilt binary (fastest) — downloads the GitHub Release asset for your platform:
+cargo binstall kitewright
+
+# From a checkout, via cargo:
+cargo install --path crates/server        # → ~/.cargo/bin/kite
+
+# Homebrew (tap TBD — formula template in packaging/kitewright.rb):
+# brew install kitewright/tap/kitewright
+
+# Docker (headless Chromium bundled in the image):
+docker run --rm -p 8090:8090 kitewright   # build locally: docker build -t kitewright .
+
+# Build from source (needs a Rust toolchain):
+cargo build --release -p kitewright        # → target/release/kite
+```
+
+### Get a browser
+
+Kitewright drives Chromium over CDP but does not embed one. It uses a system
+Chrome/Chromium when present, honors `BROWSER_EXECUTABLE`, and — if neither is
+found — falls back to a browser downloaded by `kite install`:
+
+```bash
+kite install    # fetch the latest stable chrome-headless-shell into the kite cache
+```
+
+`kite install` downloads the current Chrome-for-Testing `chrome-headless-shell`
+build for your platform into `$KITE_CACHE_DIR` (or the OS cache dir) and the
+engine picks it up automatically — no `BROWSER_EXECUTABLE` needed. Re-running is
+a no-op once a build is present. The Docker image already ships Chromium.
+
+## Run & connect
+
+`kite` with no arguments serves MCP over **Streamable HTTP** (networked, default,
+supports auth + many sessions); `kite --stdio` serves a single session over
+**stdio** for local clients.
+
+```bash
+kite
 # → kitewright listening on http://0.0.0.0:8090/mcp
 ```
 
-Connect from Claude Code:
+**HTTP transport** — connect from Claude Code:
 
 ```bash
 claude mcp add kite --transport http http://localhost:8090/mcp
+```
+
+**stdio transport** — MCP client config (Claude Desktop, Cursor, …):
+
+```json
+{
+  "mcpServers": {
+    "kite": {
+      "command": "kite",
+      "args": ["--stdio"]
+    }
+  }
+}
 ```
 
 ## Configuration
@@ -72,7 +123,7 @@ claude mcp add kite --transport http http://localhost:8090/mcp
 | `MCP_HTTP_BIND` | `0.0.0.0:8090` | Listen address |
 | `MCP_AUTH_TOKEN` | unset | When set, `/mcp` requires `Authorization: Bearer <token>` (401 otherwise). Unset = open access + startup warning |
 | `MCP_RATE_LIMIT_PER_MINUTE` | `300` | Per-client-IP request limit (fixed 60s window); 429 when exceeded |
-| `BROWSER_EXECUTABLE` | auto-detect | Path to chrome / chromium / chrome-headless-shell |
+| `BROWSER_EXECUTABLE` | auto-detect | Path to chrome / chromium / chrome-headless-shell. When unset: a system Chrome/Chromium is detected, else a `kite install`-managed build in the cache dir |
 | `BROWSER_NO_SANDBOX` | unset | Set (any value) to pass `--no-sandbox` (containers) |
 | `MCP_CONTEXT_POOL` | `2` | Number of pre-warmed blank browser contexts kept ready so a **new** session gets an instantly-usable context+page (zero context-creation latency). `0` disables. The pool refills in the background and drains with the browser on idle-reap (it never keeps the process alive) |
 | `KITE_CACHE_DIR` | `<tmp>/kitewright-cache` | Shared on-disk HTTP cache (`--disk-cache-dir`), stable across launches so repeat asset fetches hit cache. NOTE: per-session isolated contexts (cookie isolation) use an ephemeral cache; this benefits the browser's default context |
