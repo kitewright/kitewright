@@ -761,6 +761,13 @@ impl Engine {
     }
 
     fn spawn_reaper(&self) {
+        // Headed mode is human-driven: never idle-reap, so the visible window —
+        // and its authenticated session (cookies) — survives pauses between
+        // turns. It's torn down on shutdown, and a closed/crashed window is
+        // handled by launch_if_needed's liveness probe + auto-restore.
+        if self.config.headful {
+            return;
+        }
         // Weak, not Arc: a strong ref would keep the handle (and this infinite
         // task) alive after the Engine is dropped. That leaks a task + Arc on
         // every Engine::new — notably in the Node bindings, where `launch()`
@@ -1435,22 +1442,7 @@ impl BrowserSession {
     pub async fn save_state(&self) -> Result<String> {
         let mut st = self.shared.state.lock().await;
         let page = self.ensure_page(&mut st, false).await?;
-        let cookies = get_all_cookies(&page).await?;
-        let url = page.url().await.ok().flatten().unwrap_or_default();
-        let origin = page_origin(&page).await.unwrap_or_default();
-        let local_storage: HashMap<String, String> = page
-            .evaluate(DUMP_LOCALSTORAGE_JS)
-            .await
-            .context("failed to read localStorage")?
-            .into_value()
-            .unwrap_or_default();
-        let state = serde_json::json!({
-            "url": url,
-            "origin": origin,
-            "cookies": cookies,
-            "localStorage": local_storage,
-        });
-        Ok(state.to_string())
+        capture_state(&page).await
     }
 
     /// Restore a storage state produced by [`Self::save_state`]: cookies are set
@@ -1458,38 +1450,9 @@ impl BrowserSession {
     /// next navigation to its origin (it can only be written while on-origin).
     /// Call order is flexible — restore then navigate, or navigate then restore.
     pub async fn restore_state(&self, state: &str) -> Result<()> {
-        let parsed: serde_json::Value =
-            serde_json::from_str(state).context("state is not valid JSON")?;
         let mut st = self.shared.state.lock().await;
         let page = self.ensure_page(&mut st, false).await?;
-
-        if let Some(cookies) = parsed.get("cookies").and_then(|c| c.as_array()) {
-            set_cookies(&page, cookies).await?;
-        }
-
-        let origin = parsed
-            .get("origin")
-            .and_then(|o| o.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let entries: HashMap<String, String> = parsed
-            .get("localStorage")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-        if !entries.is_empty() && !origin.is_empty() {
-            // Apply now if we are already on the origin; otherwise defer to the
-            // next navigation to it.
-            let on_origin = page_origin(&page)
-                .await
-                .map(|o| o == origin)
-                .unwrap_or(false);
-            if on_origin {
-                apply_localstorage(&page, &entries).await?;
-            } else {
-                st.pending_localstorage = Some((origin, entries));
-            }
-        }
-        Ok(())
+        apply_saved_state(&page, &mut st, state).await
     }
 
     /// Assert the presence (or, with `should_exist=false`, absence) of a
@@ -2800,6 +2763,60 @@ async fn apply_pending_localstorage(st: &mut SessionState, page: &Page) {
             tracing::warn!("failed to apply restored localStorage: {e:#}");
         }
     }
+}
+
+/// Capture a session's storage state (cookies + localStorage + url) as a JSON
+/// string — the shared core of `save_state` and the auto-capture after
+/// navigation.
+async fn capture_state(page: &Page) -> Result<String> {
+    let cookies = get_all_cookies(page).await?;
+    let url = page.url().await.ok().flatten().unwrap_or_default();
+    let origin = page_origin(page).await.unwrap_or_default();
+    let local_storage: HashMap<String, String> = page
+        .evaluate(DUMP_LOCALSTORAGE_JS)
+        .await
+        .ok()
+        .and_then(|r| r.into_value().ok())
+        .unwrap_or_default();
+    Ok(serde_json::json!({
+        "url": url,
+        "origin": origin,
+        "cookies": cookies,
+        "localStorage": local_storage,
+    })
+    .to_string())
+}
+
+/// Apply a captured storage state to the current page: cookies immediately
+/// (context-wide), localStorage now if on-origin else deferred. Shared by
+/// `restore_state` and the auto-restore-after-relaunch path.
+async fn apply_saved_state(page: &Page, st: &mut SessionState, state: &str) -> Result<()> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(state).context("state is not valid JSON")?;
+    if let Some(cookies) = parsed.get("cookies").and_then(|c| c.as_array()) {
+        set_cookies(page, cookies).await?;
+    }
+    let origin = parsed
+        .get("origin")
+        .and_then(|o| o.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let entries: HashMap<String, String> = parsed
+        .get("localStorage")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    if !entries.is_empty() && !origin.is_empty() {
+        let on_origin = page_origin(page)
+            .await
+            .map(|o| o == origin)
+            .unwrap_or(false);
+        if on_origin {
+            apply_localstorage(page, &entries).await?;
+        } else {
+            st.pending_localstorage = Some((origin, entries));
+        }
+    }
+    Ok(())
 }
 
 async fn apply_localstorage(page: &Page, entries: &HashMap<String, String>) -> Result<()> {
