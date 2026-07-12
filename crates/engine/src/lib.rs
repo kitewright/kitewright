@@ -578,16 +578,22 @@ impl Engine {
         // with a cheap CDP call under a short budget; if it doesn't answer,
         // discard the corpse and fall through to relaunch.
         if let Some(h) = guard.as_ref() {
-            let responsive = matches!(
-                tokio::time::timeout(Duration::from_secs(2), h.browser.version()).await,
-                Ok(Ok(_))
-            );
-            if responsive {
-                return Ok(());
-            }
-            tracing::warn!("browser unresponsive (crash / closed window / kill); relaunching");
-            if let Some(dead) = guard.take() {
-                close_handle(dead, "browser died").await;
+            // `version()` is a trivial browser-level CDP call a live browser
+            // answers in ~ms; a dead connection fails fast ("receiver is gone").
+            // Use a GENEROUS budget (not 2s): a merely loaded — not dead —
+            // browser can be slow, and killing it here would drop every live
+            // session's page/cookies/login. Only relaunch on a definitive
+            // failure (connection error, or a >15s stall that means it's wedged).
+            match tokio::time::timeout(Duration::from_secs(15), h.browser.version()).await {
+                Ok(Ok(_)) => return Ok(()),
+                Ok(Err(_)) | Err(_) => {
+                    tracing::warn!(
+                        "browser unresponsive (crash / closed window / kill); relaunching"
+                    );
+                    if let Some(dead) = guard.take() {
+                        close_handle(dead, "browser died").await;
+                    }
+                }
             }
         }
         let started = Instant::now();
@@ -755,7 +761,12 @@ impl Engine {
     }
 
     fn spawn_reaper(&self) {
-        let handle = Arc::clone(&self.handle);
+        // Weak, not Arc: a strong ref would keep the handle (and this infinite
+        // task) alive after the Engine is dropped. That leaks a task + Arc on
+        // every Engine::new — notably in the Node bindings, where `launch()`
+        // builds an Engine per call. When the last Engine drops, upgrade fails
+        // and the reaper exits.
+        let handle = Arc::downgrade(&self.handle);
         let ttl = self.config.idle_ttl;
         // Check at least every 15s, but faster when the TTL itself is short
         // (short TTLs are used in tests and low-memory deployments).
@@ -764,6 +775,9 @@ impl Engine {
             let mut interval = tokio::time::interval(period);
             loop {
                 interval.tick().await;
+                let Some(handle) = handle.upgrade() else {
+                    break;
+                };
                 let mut guard = handle.lock().await;
                 // `last_used` is touched by every session/one-shot op, so the
                 // browser is only reaped when NO session has recent activity.
@@ -2304,6 +2318,9 @@ async fn dispatch_key(page: &Page, key: &str) -> Result<()> {
     } else {
         DispatchKeyEventType::RawKeyDown
     };
+    // A text-producing KeyDown is not idempotent (retrying re-inserts the char);
+    // compute this before key_down_type is moved into the builder.
+    let text_producing = matches!(key_down_type, DispatchKeyEventType::KeyDown);
     cmd = cmd
         .key(def.key)
         .code(def.code)
@@ -2318,29 +2335,32 @@ async fn dispatch_key(page: &Page, key: &str) -> Result<()> {
         .r#type(DispatchKeyEventType::KeyUp)
         .build()
         .map_err(|e| anyhow::anyhow!(e))?;
-    execute_key_event_retry(page, down, "key down").await?;
-    execute_key_event_retry(page, up, "key up").await?;
+    // Retry only idempotent events — control-key downs (RawKeyDown, no text) and
+    // every KeyUp — never a text KeyDown (see text_producing above).
+    execute_key_event_retry(page, down, "key down", !text_producing).await?;
+    execute_key_event_retry(page, up, "key up", true).await?;
     Ok(())
 }
 
-/// Send one CDP `Input.dispatchKeyEvent`, retrying up to 3 times on a
-/// transient/timeout CDP error. The observed CI flake is a "Request timed out"
-/// on the key-up (or key-down) send on slow/loaded macOS runners, which the
-/// larger `request_timeout` alone did not eliminate. A key down/up is
-/// idempotent for the control keys agents send through here (Escape/Tab/arrows/
-/// Enter), so re-sending after a timed-out attempt is safe.
+/// Send one CDP `Input.dispatchKeyEvent`. When `retry` is set, retry up to 3
+/// times on a transient/timeout CDP error (the observed CI flake is a "Request
+/// timed out" on the key-up send on slow/loaded runners). Retry is only safe for
+/// idempotent events — see the caller: a text-producing KeyDown passes
+/// `retry=false` so a timed-out-but-landed send can't double-type.
 async fn execute_key_event_retry(
     page: &Page,
     params: DispatchKeyEventParams,
     what: &str,
+    retry: bool,
 ) -> Result<()> {
+    let attempts = if retry { 3 } else { 1 };
     let mut last: Option<String> = None;
-    for attempt in 0..3 {
+    for attempt in 0..attempts {
         match page.execute(params.clone()).await {
             Ok(_) => return Ok(()),
             Err(e) => {
                 last = Some(e.to_string());
-                if attempt < 2 {
+                if attempt < attempts - 1 {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
             }
@@ -2894,7 +2914,7 @@ async fn ax_snapshot(page: &Page) -> Result<String> {
         .unwrap_or(&nodes[0]);
     let mut out = String::new();
     let mut truncated = false;
-    render_ax_node(root, &by_id, 0, &mut out, &mut truncated);
+    render_ax_node(root, &by_id, 0, 0, &mut out, &mut truncated);
     if truncated {
         out.push_str(&format!(
             "\n[... snapshot truncated at {MAX_SNAPSHOT_CHARS} chars ...]"
@@ -2907,16 +2927,18 @@ fn render_ax_node(
     node: &serde_json::Value,
     by_id: &HashMap<&str, &serde_json::Value>,
     depth: usize,
+    recursion: usize,
     out: &mut String,
     truncated: &mut bool,
 ) {
     if *truncated {
         return;
     }
-    // Bound recursion independently of the output cap: skipped structural nodes
-    // produce no text yet still recurse, so a pathologically deep AX tree could
-    // overflow the stack even while under MAX_SNAPSHOT_CHARS.
-    if depth > MAX_AX_DEPTH {
+    // Bound the ACTUAL recursion, not the display depth: skipped structural
+    // nodes recurse without advancing `depth`, so a deep chain of them (e.g.
+    // thousands of nested empty <div>s) would overflow the native stack while
+    // `depth` stayed at 0. `recursion` counts every frame.
+    if recursion > MAX_AX_DEPTH {
         return;
     }
     if out.len() >= MAX_SNAPSHOT_CHARS {
@@ -2965,7 +2987,7 @@ fn render_ax_node(
         .filter_map(|id| id.as_str())
     {
         if let Some(child) = by_id.get(child_id) {
-            render_ax_node(child, by_id, child_depth, out, truncated);
+            render_ax_node(child, by_id, child_depth, recursion + 1, out, truncated);
         }
     }
 }
@@ -3066,7 +3088,17 @@ fn serde_json_string(s: &str) -> String {
 /// view-source:, …) is rejected. A URL with no parseable scheme (bare host /
 /// relative) is left for the browser to resolve.
 fn validate_navigation_url(url: &str) -> Result<()> {
-    let scheme = match url.split_once(':') {
+    // Chrome's URL parser strips leading C0 controls/space and removes ALL
+    // embedded tab/CR/LF before parsing, so a naive scheme check on the raw
+    // string is bypassable: " file:///etc/passwd" or "fi\tle:///etc/passwd"
+    // would look scheme-less here yet resolve to file:// in Chrome. Validate on
+    // the same normalized form.
+    let normalized: String = url
+        .trim_start_matches(|c: char| c.is_ascii_control() || c == ' ')
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
+        .collect();
+    let scheme = match normalized.split_once(':') {
         Some((s, _))
             if !s.is_empty()
                 && s.chars()
