@@ -32,6 +32,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # kite-pdf is one crate with three build shapes selected by Cargo
+      # features; each must compile on its own so the -chromium / -lite release
+      # artifacts stay buildable.
+      - name: Check kite-pdf feature combos
+        run: |
+          cargo check -p kite-pdf --all-targets
+          cargo check -p kite-pdf --no-default-features --features chromium --all-targets
+          cargo check -p kite-pdf --no-default-features --features typst --all-targets
+
       - name: Tests
         env:
           BROWSER_EXECUTABLE: ${{ steps.chrome.outputs.chrome-path }}
@@ -41,8 +50,19 @@ jobs:
         # shared CI runners (empty CDP responses / timeouts). Slower but stable.
         run: cargo test --workspace -- --test-threads=1
 
+      # The Typst backend spawns no browser, so its tests must also pass in the
+      # browser-free "-lite" build.
+      - name: Test kite-pdf (typst-only, no browser)
+        run: cargo test -p kite-pdf --no-default-features --features typst -- --test-threads=1
+
       - name: Release build
         run: cargo build --release -p kitewright
+
+      - name: Release build (kite-pdf, all variants)
+        run: |
+          cargo build --release -p kite-pdf
+          cargo build --release -p kite-pdf --no-default-features --features chromium
+          cargo build --release -p kite-pdf --no-default-features --features typst
 
   security:
     runs-on: ubuntu-latest

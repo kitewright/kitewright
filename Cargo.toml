@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/server"]
+members = ["crates/engine", "crates/server", "crates/pdf"]
 # The napi-rs Node addon is built separately (its own `napi build` command) and
 # is deliberately kept OUT of the core workspace so `cargo clippy --workspace`,
 # `cargo build --release -p kitewright`, and the 28 engine/server tests never

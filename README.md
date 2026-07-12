@@ -243,6 +243,121 @@ npx napi build --release --js binding.js --dts binding.d.ts   # emits kitewright
 BROWSER_EXECUTABLE=/path/to/chrome node --test test/invoice.e2e.mjs
 ```
 
+## kite-pdf — HTML/Typst → PDF
+
+`kite-pdf` is a focused **document → PDF** render service and CLI built on the
+same engine (crate `crates/pdf`, binary `kite-pdf`). It has two backends,
+selected at build time via Cargo features and at run time per request:
+
+- **Chromium** — `html`/`url` → PDF via the shared `kitewright-engine` (headless
+  Chromium, the full `Page.printToPDF` option set: header/footer templates,
+  margins, landscape, backgrounds, scale, CSS page size).
+- **Typst** — a [Typst](https://typst.app) `template` + JSON `data` → PDF with
+  **no browser ever spawned**. The compiler and fonts are embedded in the
+  binary; rendering is pure CPU, language-agnostic, and reproducible.
+
+### One crate, three build shapes (same binary name)
+
+| Build | Features | Backends | Approx size | For whom |
+| --- | --- | --- | --- | --- |
+| `kite-pdf` (default) | `chromium` + `typst` | HTML **and** Typst | ~43 MB (macOS arm64, release+LTO) | You want both; one binary renders anything. |
+| `kite-pdf-chromium` | `--no-default-features --features chromium` | HTML only | smallest binary (no Typst/fonts) + runtime browser | You only render HTML/URLs; skip the Typst compiler + bundled fonts. |
+| `kite-pdf-lite` | `--no-default-features --features typst` | Typst only | ~39 MB, **no browser** | You control the template; want a browser-free, distroless service. |
+
+```bash
+cargo build --release -p kite-pdf                                   # both backends
+cargo build --release -p kite-pdf --no-default-features --features chromium
+cargo build --release -p kite-pdf --no-default-features --features typst
+```
+
+### HTTP API
+
+`POST /render` with a JSON body; responds with `application/pdf` bytes (200) or a
+JSON `{ "error": "..." }` (400 client / 500 server). `GET /healthz` returns the
+compiled-in backends. Bind address: `KITE_PDF_BIND` (default `0.0.0.0:8091`).
+
+```jsonc
+{
+  "engine": "chromium" | "typst",   // optional; else inferred (html/url→chromium, template→typst)
+  "html":   "<!doctype html>...",   // chromium
+  "url":    "https://...",          // chromium
+  "template": "= Invoice ...",      // typst source
+  "data":   { "number": "INV-1" },  // JSON, exposed to the template as sys.inputs.data
+  "format": "A4" | "Letter" | "Legal" | "A3",
+  "landscape": false,
+  "print_background": false,
+  "display_header_footer": false,
+  "header_template": "<div>...</div>",
+  "footer_template": "<div>... <span class=\"pageNumber\"></span> ...</div>",
+  "margin": { "top": "20px", "bottom": "40px", "left": "15px", "right": "15px" }
+}
+```
+
+Requesting a backend that was not compiled into the running binary returns a
+clear **400** (e.g. `"typst backend not compiled in this build — use the full or
+-lite build"`). In the Typst template, read the injected data with:
+
+```typst
+#let data = json(bytes(sys.inputs.data))
+= Invoice #data.number
+```
+
+```bash
+# Chromium: render an HTML string
+curl -sX POST localhost:8091/render \
+  -H 'content-type: application/json' \
+  -d '{"html":"<h1>Hello</h1>"}' -o hello.pdf
+
+# Typst: data-driven invoice, no browser touched
+curl -sX POST localhost:8091/render \
+  -H 'content-type: application/json' \
+  -d '{"template":"#let d=json(bytes(sys.inputs.data))\n= Invoice #d.number","data":{"number":"INV-7"}}' \
+  -o invoice.pdf
+```
+
+> **Note:** the render service ships with **no auth** by default — run it on a
+> trusted network or behind a gateway. (Bearer-auth + rate-limit, mirroring the
+> `kite` server's `HttpGuard`, is a TODO.)
+
+### CLI
+
+```bash
+# Chromium: HTML file → PDF, with a footer template + margins
+kite-pdf render --html-file invoice.html --footer-file footer.html \
+  --margin-top 20px --margin-bottom 40px -o invoice.pdf
+
+# Typst: template + data → PDF (no browser)
+kite-pdf render --template invoice.typ --data invoice.json -o invoice.pdf
+
+# Run the HTTP service (also the default with no arguments)
+kite-pdf serve
+```
+
+### Docker
+
+```bash
+# Full service (slim Debian + Chromium; both backends). Build from the repo root:
+docker build -f crates/pdf/Dockerfile      -t kite-pdf      .
+# Browser-free, distroless, Typst-only:
+docker build -f crates/pdf/Dockerfile.lite -t kite-pdf-lite .
+docker run -p 8091:8091 kite-pdf
+```
+
+### Honest comparison
+
+- **vs [Gotenberg](https://gotenberg.dev):** kite-pdf is the lightest
+  self-hosted HTML→PDF option — a single small binary, lazy browser lifecycle,
+  reaped when idle. Gotenberg wins when you need **office-document conversion**
+  (DOCX/XLSX/ODT via LibreOffice) and a batteries-included API; kite-pdf
+  deliberately does **not** do office formats.
+- **vs [react-pdf](https://react-pdf.org) / client PDF libs:** the Typst path is
+  **browser-free and language-agnostic** — no Node runtime, no React, no
+  headless Chrome — just a template + JSON from any language over HTTP. You give
+  up React's component model in exchange for a far smaller, faster, reproducible
+  typesetting pipeline.
+- **Where it concedes:** no office-doc (DOCX/XLSX) conversion, and the Chromium
+  backend still needs a browser at runtime (the Typst/`-lite` backend does not).
+
 ## Roadmap
 
 - [x] `snapshot` — accessibility-tree snapshot (token-budgeted)
@@ -254,6 +369,7 @@ BROWSER_EXECUTABLE=/path/to/chrome node --test test/invoice.e2e.mjs
 - [x] `assert` — structured pass/fail primitive for agent-driven feature tests
 - [x] Markdown (readability) extraction mode
 - [x] `pdf` — print the current page to PDF (`Page.printToPDF`)
+- [x] `kite-pdf` — standalone HTML/Typst → PDF service + CLI (dual-backend, three feature-gated build shapes)
 - [x] Actionability auto-waiting (visible / enabled / unobstructed / stable) with cause-specific errors
 - [x] `console` / `network` capture for debugging
 - [x] `snapshot {diff}` — only what changed since the last snapshot
