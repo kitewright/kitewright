@@ -906,6 +906,24 @@ impl BrowserSession {
         read_page_info(&page, url).await
     }
 
+    /// Like [`Self::navigate`], but honor puppeteer's `wait_until` after the load
+    /// event: `"networkidle0"`/`"networkidle2"` add a brief settle so late
+    /// resources land before the caller (e.g. `page.pdf()`) reads the page.
+    /// `"load"`/`"domcontentloaded"` are already satisfied by the navigation.
+    /// Used by the Node facade's `page.goto(url, {waitUntil})`.
+    pub async fn navigate_wait(&self, url: &str, wait_until: Option<&str>) -> Result<PageInfo> {
+        let mut st = self.shared.state.lock().await;
+        let page = self.ensure_page(&mut st, true).await?;
+        let effective = st.lite_default;
+        self.goto(&mut st, &page, url, effective).await?;
+        if matches!(wait_until, Some("networkidle0") | Some("networkidle2")) {
+            let deadline = Instant::now() + self.shared.engine.config.nav_timeout;
+            wait_ready_state(&page, &["complete"], deadline).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        read_page_info(&page, url).await
+    }
+
     /// Screenshot the current page (PNG). If `url` is given, navigate first.
     pub async fn screenshot(&self, url: Option<&str>, full_page: bool) -> Result<Vec<u8>> {
         let mut st = self.shared.state.lock().await;
@@ -1359,6 +1377,7 @@ impl BrowserSession {
         // history.back() does not resolve on load; give the navigation a moment
         // to settle before reading the new document.
         tokio::time::sleep(Duration::from_millis(400)).await;
+        apply_pending_localstorage(&mut st, &page).await;
         let info = read_page_info(&page, "").await?;
         st.last_url = Some(info.url.clone());
         Ok(info)
@@ -1645,14 +1664,24 @@ impl BrowserSession {
         let engine = &self.shared.engine;
         let mut guard = engine.handle.lock().await;
         engine.launch_if_needed(&mut guard).await?;
-        let handle = guard.as_mut().unwrap();
-        handle.last_used = Instant::now();
+        let generation = {
+            let handle = guard.as_mut().unwrap();
+            handle.last_used = Instant::now();
+            handle.generation
+        };
 
-        if let Some(page) = &st.page {
-            if st.generation == handle.generation {
-                return Ok(page.clone());
+        if st.generation == generation {
+            if let Some(page) = st.page.clone() {
+                // Reusing the existing page. If a restore is pending and a
+                // click/link navigation has since reached the target origin,
+                // apply the deferred localStorage now (drop the handle lock
+                // first — the helper does its own CDP call).
+                drop(guard);
+                apply_pending_localstorage(st, &page).await;
+                return Ok(page);
             }
         }
+        let handle = guard.as_mut().unwrap();
         // First use, or the page belongs to a dead browser launch.
         let lost_state = st.page.take().is_some();
         st.context_id = None;
@@ -1822,20 +1851,7 @@ impl BrowserSession {
                 .flatten()
                 .unwrap_or_else(|| url.to_string()),
         );
-        // If a restored state left localStorage pending for this origin, apply
-        // it now that we are on the origin (localStorage is origin-scoped).
-        if let Some((origin, _)) = &st.pending_localstorage {
-            let on_origin = page_origin(page)
-                .await
-                .map(|o| &o == origin)
-                .unwrap_or(false);
-            if on_origin {
-                let (_, entries) = st.pending_localstorage.take().unwrap();
-                if let Err(e) = apply_localstorage(page, &entries).await {
-                    tracing::warn!("failed to apply restored localStorage: {e:#}");
-                }
-            }
-        }
+        apply_pending_localstorage(st, page).await;
         Ok(())
     }
 }
@@ -2761,6 +2777,29 @@ async fn page_origin(page: &Page) -> Option<String> {
         .ok()
         .and_then(|r| r.into_value::<String>().ok())
         .filter(|o| o != "null" && !o.is_empty())
+}
+
+/// Apply localStorage deferred by `restore_state` once the page is on the
+/// matching origin (localStorage is origin-scoped, so it can't be written until
+/// then). No-op when nothing is pending or the origin doesn't match yet. Called
+/// on every navigation path — `goto`, `navigate_back`, and lazily in
+/// `ensure_page` — so restored state isn't lost when the origin is reached by a
+/// click/link instead of an explicit navigate. The cheap `is_none` check keeps
+/// the origin probe off the hot path when nothing is pending.
+async fn apply_pending_localstorage(st: &mut SessionState, page: &Page) {
+    let on_origin = match &st.pending_localstorage {
+        None => return,
+        Some((origin, _)) => page_origin(page)
+            .await
+            .map(|o| &o == origin)
+            .unwrap_or(false),
+    };
+    if on_origin {
+        let (_, entries) = st.pending_localstorage.take().unwrap();
+        if let Err(e) = apply_localstorage(page, &entries).await {
+            tracing::warn!("failed to apply restored localStorage: {e:#}");
+        }
+    }
 }
 
 async fn apply_localstorage(page: &Page, entries: &HashMap<String, String>) -> Result<()> {
