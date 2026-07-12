@@ -843,3 +843,31 @@ async fn set_content_then_pdf_with_footer_end_to_end() {
         "PDF missing %%EOF trailer"
     );
 }
+
+/// DNS-rebinding protection (CVE-2026-42559 mitigation): a request carrying a
+/// cross-origin `Origin` header (as a malicious webpage in a browser would) is
+/// rejected with 403, even before auth. Requests with no Origin (normal MCP
+/// clients) are unaffected — every other test here sends none and passes.
+#[tokio::test(flavor = "multi_thread")]
+async fn cross_origin_request_is_rejected() {
+    let port = 18990 + (std::process::id() % 400) as u16;
+    let server = start_server(port).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&server.base)
+        .header("content-type", "application/json")
+        .header("accept", "application/json, text/event-stream")
+        .header("origin", "https://evil.example")
+        .body(
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "attacker", "version": "0"}}
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status(), 403, "cross-origin request must be rejected");
+}

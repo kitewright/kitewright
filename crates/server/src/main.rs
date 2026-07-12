@@ -27,7 +27,7 @@ use rmcp::{
     transport::streamable_http_server::{
         session::local::LocalSessionManager, StreamableHttpService,
     },
-    ServerHandler,
+    ServerHandler, ServiceExt,
 };
 
 use kitewright_engine::{BrowserSession, Engine, EngineConfig, PdfOptions};
@@ -689,6 +689,8 @@ struct HttpGuard {
     /// Fixed 60s window per client IP.
     rate: Arc<Mutex<HashMap<IpAddr, (Instant, u32)>>>,
     limit_per_minute: u32,
+    /// Extra allowed `Origin` values beyond loopback (from MCP_ALLOWED_ORIGINS).
+    allowed_origins: Arc<[String]>,
 }
 
 impl HttpGuard {
@@ -706,11 +708,39 @@ impl HttpGuard {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(300);
+        let allowed_origins: Arc<[String]> = std::env::var("MCP_ALLOWED_ORIGINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
         Self {
             token,
             rate: Arc::new(Mutex::new(HashMap::new())),
             limit_per_minute,
+            allowed_origins,
         }
+    }
+
+    /// DNS-rebinding protection. A cross-origin webpage in a victim's browser
+    /// sends an `Origin` header; legitimate MCP clients (Claude Code, curl,
+    /// the SDK) do not. So: no Origin → allow (non-browser); Origin present →
+    /// it must be a loopback origin or explicitly allow-listed. Mitigates
+    /// CVE-2026-42559 without depending on the transport crate's own fix.
+    fn origin_allowed(&self, origin: Option<&str>) -> bool {
+        let Some(origin) = origin else { return true };
+        if self.allowed_origins.iter().any(|a| a == origin) {
+            return true;
+        }
+        // Loopback origins: http(s)://localhost | 127.0.0.1 | [::1] (any port).
+        let host = origin
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(origin);
+        let host = host.split('/').next().unwrap_or(host);
+        let hostname = host.rsplit_once(':').map_or(host, |(h, _)| h);
+        matches!(hostname, "localhost" | "127.0.0.1" | "[::1]" | "::1")
     }
 
     /// Fixed-window counter. Returns false when the client exceeded the limit.
@@ -760,6 +790,20 @@ async fn guard_middleware(
     req: Request,
     next: Next,
 ) -> Response {
+    // DNS-rebinding protection: reject cross-origin browser requests before
+    // anything else. Non-browser clients send no Origin and pass through.
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    if !guard.origin_allowed(origin) {
+        return rpc_error(
+            StatusCode::FORBIDDEN,
+            -32003,
+            "forbidden: cross-origin request rejected (DNS-rebinding protection); \
+             set MCP_ALLOWED_ORIGINS to allow-list an origin",
+        );
+    }
     if !guard.allow(addr.ip()) {
         return rpc_error(
             StatusCode::TOO_MANY_REQUESTS,
@@ -788,12 +832,53 @@ async fn guard_middleware(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Always log to stderr: in stdio mode, stdout IS the MCP protocol channel
+    // and must carry nothing else. stderr is correct for the HTTP mode too.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
+    // stdio transport (local, no server) vs Streamable HTTP (networked, default).
+    // Local MCP clients (Claude Desktop, Cursor, Claude Code) spawn the binary
+    // and talk over stdin/stdout — no port, no auth. Select with `kite --stdio`
+    // / `kite stdio`, or KITE_STDIO=1.
+    let stdio = std::env::args()
+        .skip(1)
+        .any(|a| a == "--stdio" || a == "stdio")
+        || std::env::var_os("KITE_STDIO").is_some();
+    if stdio {
+        run_stdio().await
+    } else {
+        run_http().await
+    }
+}
+
+/// Serve one MCP session over stdin/stdout for local, single-user use.
+async fn run_stdio() -> Result<()> {
+    let engine = Engine::new(EngineConfig::default());
+    // Warm the browser in the background while the client handshakes.
+    {
+        let e = engine.clone();
+        tokio::spawn(async move {
+            if let Err(err) = e.prewarm().await {
+                tracing::debug!("stdio prewarm failed (will retry on first call): {err:#}");
+            }
+        });
+    }
+    tracing::info!("kitewright serving over stdio");
+    let service = BrowserMcp::new(engine.create_session())
+        .serve(rmcp::transport::stdio())
+        .await?;
+    service.waiting().await?;
+    engine.shutdown().await;
+    Ok(())
+}
+
+/// Serve MCP over Streamable HTTP (networked; supports many sessions + auth).
+async fn run_http() -> Result<()> {
     let bind = std::env::var("MCP_HTTP_BIND").unwrap_or_else(|_| "0.0.0.0:8090".to_string());
     let engine = Engine::new(EngineConfig::default());
     let engine_for_shutdown = engine.clone();

@@ -17,7 +17,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-rmcp = { version = "0.16", features = ["server", "transport-streamable-http-server"] }
+rmcp = { version = "0.16", features = ["server", "transport-streamable-http-server", "transport-io"] }
 axum = "0.8"
 schemars = "1"
 base64 = "0.22"

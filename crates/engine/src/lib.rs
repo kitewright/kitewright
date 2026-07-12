@@ -362,7 +362,14 @@ impl Engine {
             std::env::temp_dir().join(format!("kitewright-{}-{}", std::process::id(), seq,));
         tokio::fs::create_dir_all(&data_dir).await?;
 
-        let mut builder = BrowserConfig::builder().user_data_dir(&data_dir);
+        // Generous CDP command timeout: the default is short enough that a
+        // single command (e.g. Input.dispatchKeyEvent) can time out on a slow
+        // or loaded runner (observed as flaky "Request timed out" in CI on
+        // shared macOS runners). 30s never fires in normal use but absorbs
+        // scheduling stalls.
+        let mut builder = BrowserConfig::builder()
+            .user_data_dir(&data_dir)
+            .request_timeout(Duration::from_secs(30));
         if let Some(exe) = &self.config.executable {
             builder = builder.chrome_executable(exe);
         }
