@@ -374,7 +374,9 @@ async fn session_page_persists_and_supports_interaction() {
     // --- page-level key press reaches the document listener ---
     session.press_key("Escape").await.expect("press_key failed");
     session
-        .wait_for(None, Some("last-key:Escape"), Some(3_000))
+        // Generous timeout: on a heavily-loaded CI runner the keypress →
+        // document listener → DOM update → CDP read-back round trip can be slow.
+        .wait_for(None, Some("last-key:Escape"), Some(15_000))
         .await
         .expect("Escape key did not reach the page");
 

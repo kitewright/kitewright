@@ -44,6 +44,14 @@ const MAX_TEXT_CHARS: usize = 20_000;
 const MAX_SNAPSHOT_CHARS: usize = 15_000;
 const MAX_MARKDOWN_CHARS: usize = 20_000;
 const WAIT_FOR_POLL: Duration = Duration::from_millis(100);
+/// Upper bound on how long a single poll's CDP evaluation may block before it is
+/// abandoned and retried. A loaded machine can stall one `Runtime.evaluate` for
+/// tens of seconds (the CDP request timeout); without this cap a single stuck
+/// poll would blow the caller's whole wait window.
+const WAIT_FOR_POLL_BUDGET: Duration = Duration::from_secs(3);
+/// Floor for the per-poll budget so the last poll before the deadline still gets
+/// a fair chance to answer.
+const WAIT_FOR_MIN_BUDGET: Duration = Duration::from_millis(250);
 /// Default timeout for [`BrowserSession::wait_for`].
 pub const WAIT_FOR_DEFAULT_TIMEOUT_MS: u64 = 10_000;
 /// Hard cap for [`BrowserSession::wait_for`] so a tool call can never park an
@@ -1411,21 +1419,22 @@ impl BrowserSession {
             if should_exist { "present" } else { "absent" }
         );
         let started = Instant::now();
+        // Last successfully-evaluated presence; a transient CDP failure just
+        // keeps polling (assert never errors on a failed condition, and a poll
+        // hiccup is not a condition result).
+        let mut present = false;
         loop {
-            let present: bool = page
-                .evaluate(js.clone())
-                .await
-                .context("assert condition evaluation failed")?
-                .into_value()
-                .unwrap_or(false);
-            // `present == should_exist` is the passing state for both modes.
-            if present == should_exist {
-                return Ok(AssertOutcome {
-                    passed: true,
-                    checked,
-                    found: present,
-                    elapsed_ms: started.elapsed().as_millis() as u64,
-                });
+            if let Ok(v) = poll_condition(&page, &js, poll_budget(timeout, started)).await {
+                present = v;
+                // `present == should_exist` is the passing state for both modes.
+                if present == should_exist {
+                    return Ok(AssertOutcome {
+                        passed: true,
+                        checked,
+                        found: present,
+                        elapsed_ms: started.elapsed().as_millis() as u64,
+                    });
+                }
             }
             if started.elapsed() >= timeout {
                 return Ok(AssertOutcome {
@@ -1481,22 +1490,31 @@ impl BrowserSession {
         let js = conds.join(" && ");
         let started = Instant::now();
         loop {
-            let hit: bool = page
-                .evaluate(js.clone())
-                .await
-                .context("wait_for condition evaluation failed")?
-                .into_value()
-                .unwrap_or(false);
-            if hit {
+            // A single transient CDP hiccup (e.g. "Request timed out" on a
+            // loaded runner) must NOT abort the wait — bound the poll, treat any
+            // failure as "not yet satisfied", and keep polling until the
+            // deadline. Surface the last poll's error only if we actually time
+            // out.
+            let outcome = poll_condition(&page, &js, poll_budget(timeout, started)).await;
+            if matches!(outcome, Ok(true)) {
                 return Ok(started.elapsed().as_millis() as u64);
             }
             if started.elapsed() >= timeout {
-                bail!(
-                    "wait_for timed out after {}ms (selector: {:?}, text: {:?})",
-                    timeout.as_millis(),
-                    selector,
-                    text
-                );
+                return Err(match outcome {
+                    Err(e) => anyhow::anyhow!(
+                        "wait_for timed out after {}ms (selector: {:?}, text: {:?}); last evaluation error: {}",
+                        timeout.as_millis(),
+                        selector,
+                        text,
+                        e
+                    ),
+                    Ok(_) => anyhow::anyhow!(
+                        "wait_for timed out after {}ms (selector: {:?}, text: {:?})",
+                        timeout.as_millis(),
+                        selector,
+                        text
+                    ),
+                });
             }
             tokio::time::sleep(WAIT_FOR_POLL).await;
         }
@@ -2933,6 +2951,34 @@ fn cap(s: String, max: usize) -> String {
 
 fn serde_json_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Per-poll CDP evaluation budget for [`BrowserSession::wait_for`] /
+/// [`BrowserSession::assert`]: the time still left before the deadline, capped
+/// at [`WAIT_FOR_POLL_BUDGET`] and floored at [`WAIT_FOR_MIN_BUDGET`] so a
+/// single stuck evaluation is abandoned and retried rather than consuming the
+/// whole wait.
+fn poll_budget(timeout: Duration, started: Instant) -> Duration {
+    timeout
+        .saturating_sub(started.elapsed())
+        .min(WAIT_FOR_POLL_BUDGET)
+        .max(WAIT_FOR_MIN_BUDGET)
+}
+
+/// Evaluate a boolean poll condition once, bounded by `budget`. A timeout or CDP
+/// error is returned as `Err` so the caller can treat it as "not yet satisfied"
+/// and keep polling, instead of aborting the whole wait on one transient hiccup.
+async fn poll_condition(page: &Page, js: &str, budget: Duration) -> Result<bool> {
+    let value = tokio::time::timeout(budget, page.evaluate(js.to_string()))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "condition evaluation exceeded {}ms poll budget",
+                budget.as_millis()
+            )
+        })?
+        .context("condition evaluation failed")?;
+    Ok(value.into_value().unwrap_or(false))
 }
 
 #[cfg(test)]
