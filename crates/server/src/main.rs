@@ -144,6 +144,14 @@ struct HoverParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct EvaluateParams {
+    /// JavaScript expression to evaluate on the current page. A promise result
+    /// is awaited and its resolved value returned. Non-serializable results
+    /// (DOM nodes, etc.) come back as null.
+    script: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct HandleDialogParams {
     /// Accept (true) or dismiss (false) the next dialog(s)
     accept: bool,
@@ -590,6 +598,17 @@ impl BrowserMcp {
         Ok(json_text(serde_json::json!({
             "title": info.title, "url": info.url
         })))
+    }
+
+    #[tool(
+        description = "Evaluate a JavaScript expression on the current page and return its result as JSON (puppeteer's page.evaluate, via CDP Runtime.evaluate). A promise result is awaited. Use it to read computed state, extract structured data, or set values the higher-level tools can't reach. A thrown JS exception is returned as an error."
+    )]
+    async fn browser_evaluate(
+        &self,
+        Parameters(EvaluateParams { script }): Parameters<EvaluateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let value = self.session.evaluate(&script).await.map_err(err)?;
+        Ok(json_text(serde_json::json!({ "result": value })))
     }
 
     #[tool(
