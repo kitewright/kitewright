@@ -126,6 +126,8 @@ claude mcp add kite --transport http http://localhost:8090/mcp
 | `BROWSER_EXECUTABLE` | auto-detect | Path to chrome / chromium / chrome-headless-shell. When unset: a system Chrome/Chromium is detected, else a `kite install`-managed build in the cache dir |
 | `BROWSER_NO_SANDBOX` | unset | Set (any value) to pass `--no-sandbox` (containers) |
 | `KITE_HEADLESS` | unset | Kite launches a **headed** (visible) browser by default so you can watch automation. Set (any value) to run **headless** — required on servers, CI, and containers with no display, where a headed Chrome fails to launch |
+| `KITE_IDLE_TIMEOUT_SECS` | `1800` | Idle seconds before a headless browser is reaped to free memory. Default 30min keeps a session alive across normal pauses (headed never reaps). A reap that does happen is recovered by cookie **auto-restore**, so an authenticated session survives it. Lower it on a memory-constrained multi-session server |
+| `KITE_ALLOW_SECRET_FILES` | unset | Set (any value) to let `browser_fill_secret` read `file:/path` secrets from disk. Optionally fence reads to a directory with `KITE_SECRET_DIR`. `env:` secrets need no opt-in |
 | `KITE_VIEWPORT` | `1440x900` | Default viewport / window size as `WIDTHxHEIGHT` (Chromium's own default is a cramped 800x600). Adjust at runtime with the `browser_resize` tool |
 | `MCP_CONTEXT_POOL` | `2` | Number of pre-warmed blank browser contexts kept ready so a **new** session gets an instantly-usable context+page (zero context-creation latency). `0` disables. The pool refills in the background and drains with the browser on idle-reap (it never keeps the process alive) |
 | `KITE_CACHE_DIR` | `<tmp>/kitewright-cache` | Shared on-disk HTTP cache (`--disk-cache-dir`), stable across launches so repeat asset fetches hit cache. NOTE: per-session isolated contexts (cookie isolation) use an ephemeral cache; this benefits the browser's default context |
@@ -157,6 +159,7 @@ All tools operate on the session's persistent page.
 - `browser_click {selector, timeout_ms?}` — scroll into view + click the first match
 - `browser_type {selector, text, clear?, press_enter?, timeout_ms?}` — focus and type into an element
 - `browser_fill_form {fields: [{selector, value}], timeout_ms?}` — fill several inputs in one call (per-field ok/error summary)
+- `browser_fill_secret {selector, secret_ref, press_enter?, timeout_ms?}` — type a secret (password) whose plaintext **never enters the tool call**: `secret_ref` is `env:NAME` (a server env var) or `file:/path` (opt-in via `KITE_ALLOW_SECRET_FILES`). Resolved server-side, then typed
 - `browser_select_option {selector, value?, label?, timeout_ms?}` — pick an `<option>` by value or visible label (fires `change`)
 - `browser_hover {selector, timeout_ms?}` — move the mouse to an element's center (reveals CSS `:hover` menus)
 - `browser_press_key {key}` — send Enter / Tab / Escape / ArrowDown / … to the focused element
