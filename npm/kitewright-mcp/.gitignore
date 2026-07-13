@@ -1,0 +1,4 @@
+node_modules/
+npm/*/kite
+npm/*/kite.exe
+*.tgz
