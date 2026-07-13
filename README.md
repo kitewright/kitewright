@@ -55,10 +55,10 @@ Each MCP session owns one persistent page inside its own Chromium browser contex
 The zero-install way — run it straight from **npx**, like `@playwright/mcp`:
 
 ```bash
-claude mcp add kitewright -- npx -y kitewright-mcp
+claude mcp add kitewright -- npx -y @kitewright/mcp
 ```
 
-`npx kitewright-mcp` resolves the prebuilt `kite` binary for your platform (an
+`npx @kitewright/mcp` resolves the prebuilt `kite` binary for your platform (an
 optional per-platform dependency, esbuild-style) and starts a stdio MCP server —
 no Rust toolchain, no build. See [`npm/kitewright-mcp`](npm/kitewright-mcp).
 

@@ -1,4 +1,4 @@
-# kitewright-mcp
+# @kitewright/mcp
 
 Run the [kitewright](https://github.com/kitewright/kitewright) browser-automation
 MCP server with **npx** — no build step, no cargo. A tiny launcher that resolves
@@ -9,7 +9,7 @@ the prebuilt `kite` binary for your platform and starts it over stdio.
 **Claude Code**
 
 ```bash
-claude mcp add kitewright -- npx -y kitewright-mcp
+claude mcp add kitewright -- npx -y @kitewright/mcp
 ```
 
 **Cursor / any MCP client** (`mcp.json`)
@@ -19,14 +19,14 @@ claude mcp add kitewright -- npx -y kitewright-mcp
   "mcpServers": {
     "kitewright": {
       "command": "npx",
-      "args": ["-y", "kitewright-mcp"]
+      "args": ["-y", "@kitewright/mcp"]
     }
   }
 }
 ```
 
-That's it — `npx kitewright-mcp` with no args starts a stdio MCP server. Pass
-flags through for other modes (e.g. `npx kitewright-mcp --http` for the HTTP
+That's it — `npx @kitewright/mcp` with no args starts a stdio MCP server. Pass
+flags through for other modes (e.g. `npx @kitewright/mcp --http` for the HTTP
 transport).
 
 ## How it works
