@@ -1,0 +1,32 @@
+{
+  "name": "@kitewright/pdf",
+  "version": "0.1.0",
+  "description": "Kitewright HTML/Typst → PDF render service + CLI — run with npx, no build step. Backed by the Rust kite-pdf engine.",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "kite-pdf": "bin.js"
+  },
+  "files": [
+    "bin.js"
+  ],
+  "optionalDependencies": {
+    "@kitewright/pdf-darwin-arm64": "0.1.0",
+    "@kitewright/pdf-darwin-x64": "0.1.0",
+    "@kitewright/pdf-linux-x64-gnu": "0.1.0",
+    "@kitewright/pdf-win32-x64-msvc": "0.1.0"
+  },
+  "keywords": [
+    "pdf",
+    "html-to-pdf",
+    "typst",
+    "render",
+    "kitewright"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

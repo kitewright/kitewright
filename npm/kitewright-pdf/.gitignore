@@ -1,0 +1,4 @@
+node_modules/
+npm/*/kite-pdf
+npm/*/kite-pdf.exe
+*.tgz

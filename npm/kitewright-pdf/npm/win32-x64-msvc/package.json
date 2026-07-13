@@ -1,0 +1,10 @@
+{
+  "name": "@kitewright/pdf-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "Prebuilt kite-pdf binary for @kitewright/pdf on Windows x64.",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["kite-pdf.exe"]
+}

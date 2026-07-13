@@ -1,0 +1,88 @@
+name: publish @kitewright/pdf (npx)
+
+# Cross-builds the `kite-pdf` binary per platform, packs each into the matching
+# @kitewright/pdf-<target> package, then publishes those + the @kitewright/pdf
+# launcher. Requires repo secret NPM_TOKEN (Automation token with publish rights
+# to the @kitewright scope). Trigger by pushing a `pdf-v*` tag or via dispatch.
+
+on:
+  push:
+    tags: ["pdf-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            pkg: darwin-arm64
+            exe: kite-pdf
+          # Cross-compile x86_64 on the Apple-Silicon runner (macos-13 is scarce).
+          - runner: macos-14
+            target: x86_64-apple-darwin
+            pkg: darwin-x64
+            exe: kite-pdf
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            pkg: linux-x64-gnu
+            exe: kite-pdf
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            pkg: win32-x64-msvc
+            exe: kite-pdf.exe
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build kite-pdf (release)
+        run: cargo build --release -p kite-pdf --bin kite-pdf --target ${{ matrix.target }}
+      - name: Stage binary into the platform package
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/${{ matrix.exe }}" \
+             "npm/kitewright-pdf/npm/${{ matrix.pkg }}/${{ matrix.exe }}"
+      - name: Publish @kitewright/pdf-${{ matrix.pkg }}
+        working-directory: npm/kitewright-pdf/npm/${{ matrix.pkg }}
+        shell: bash
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+            echo "$PKG@$VER already published — skipping"
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-launcher:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: Publish @kitewright/pdf launcher
+        working-directory: npm/kitewright-pdf
+        shell: bash
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+            echo "$PKG@$VER already published — skipping"
+          else
+            npm publish --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

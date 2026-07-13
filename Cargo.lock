@@ -1779,6 +1779,7 @@ dependencies = [
  "typst",
  "typst-assets",
  "typst-pdf",
+ "url",
 ]
 
 [[package]]

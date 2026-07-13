@@ -1,0 +1,10 @@
+{
+  "name": "@kitewright/pdf-darwin-x64",
+  "version": "0.1.0",
+  "description": "Prebuilt kite-pdf binary for @kitewright/pdf on macOS x64.",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "os": ["darwin"],
+  "cpu": ["x64"],
+  "files": ["kite-pdf"]
+}
