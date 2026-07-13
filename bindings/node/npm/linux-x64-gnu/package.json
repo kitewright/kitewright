@@ -1,0 +1,19 @@
+{
+  "name": "@kitewright/node-linux-x64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "kitewright-node.linux-x64-gnu.node",
+  "files": [
+    "kitewright-node.linux-x64-gnu.node"
+  ],
+  "description": "Puppeteer-compatible (experimental) HTML→PDF / browser automation backed by the Rust kitewright-engine via napi-rs",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

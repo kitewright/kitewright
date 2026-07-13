@@ -1,0 +1,16 @@
+{
+  "name": "@kitewright/node-darwin-arm64",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "kitewright-node.darwin-arm64.node",
+  "files": [
+    "kitewright-node.darwin-arm64.node"
+  ],
+  "description": "Puppeteer-compatible (experimental) HTML→PDF / browser automation backed by the Rust kitewright-engine via napi-rs",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ]
+}
