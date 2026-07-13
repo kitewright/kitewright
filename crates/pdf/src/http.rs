@@ -73,7 +73,7 @@ async fn render_handler(
     headers: HeaderMap,
     Json(req): Json<RenderRequest>,
 ) -> Response {
-    if let Err(resp) = check_auth(&headers) {
+    if let Some(resp) = check_auth(&headers) {
         return resp;
     }
     // Cap concurrency: hold a permit for the whole render so a burst can't
@@ -104,24 +104,28 @@ async fn render_handler(
 
 /// Bearer token required on `/render` when `KITE_PDF_AUTH_TOKEN` is set; `/healthz`
 /// stays open. No token = open (only reachable on the loopback default bind).
-fn check_auth(headers: &HeaderMap) -> Result<(), Response> {
-    let Some(expected) = std::env::var("KITE_PDF_AUTH_TOKEN")
+/// Returns `Some(response)` to reject, or `None` when the request is authorized
+/// (an Option rather than `Result<(), Response>` — axum's `Response` is large, so
+/// a Result would trip clippy's `result_large_err`).
+fn check_auth(headers: &HeaderMap) -> Option<Response> {
+    let expected = std::env::var("KITE_PDF_AUTH_TOKEN")
         .ok()
-        .filter(|t| !t.is_empty())
-    else {
-        return Ok(());
-    };
+        .filter(|t| !t.is_empty())?; // no token configured → open (loopback default)
     let presented = headers
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "));
     match presented {
-        Some(tok) if ct_eq(tok.as_bytes(), expected.as_bytes()) => Ok(()),
-        _ => Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "unauthorized: missing or invalid bearer token" })),
-        )
-            .into_response()),
+        Some(tok) if ct_eq(tok.as_bytes(), expected.as_bytes()) => None,
+        _ => Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(
+                    serde_json::json!({ "error": "unauthorized: missing or invalid bearer token" }),
+                ),
+            )
+                .into_response(),
+        ),
     }
 }
 
