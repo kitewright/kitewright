@@ -747,13 +747,25 @@ async fn fill_secret_resolves_env_and_types_it() {
         .evaluate("document.getElementById('pw').value")
         .await
         .expect("evaluate failed");
-    assert_eq!(value, serde_json::json!("hunter2-secret"), "secret not typed");
+    assert_eq!(
+        value,
+        serde_json::json!("hunter2-secret"),
+        "secret not typed"
+    );
     // A schemeless (plaintext) reference is refused.
     assert!(
         s.fill_secret("#pw", "not-a-reference", false, None)
             .await
             .is_err(),
         "plaintext secret ref should be rejected"
+    );
+    // file: secrets are OFF by default (KITE_ALLOW_SECRET_FILES unset) — no
+    // arbitrary host-file reads without an explicit opt-in.
+    assert!(
+        s.fill_secret("#pw", "file:/etc/hostname", false, None)
+            .await
+            .is_err(),
+        "file: secret must be refused when KITE_ALLOW_SECRET_FILES is unset"
     );
     s.close().await;
     engine.shutdown().await;

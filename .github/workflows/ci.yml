@@ -144,3 +144,9 @@ jobs:
             --skip-dirs target \
             --skip-dirs bindings/node/node_modules \
             .
+      - name: cargo audit (Rust dependency CVEs)
+        run: |
+          cargo install cargo-audit --locked || true
+          # Reads .cargo/audit.toml (documented ignores). Fails on any
+          # unignored vulnerability advisory.
+          cargo audit

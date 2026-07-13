@@ -1,0 +1,14 @@
+# cargo-audit policy (run: cargo audit). Vulnerabilities fail; unmaintained
+# advisories are warnings.
+[advisories]
+ignore = [
+  # quick-xml 0.38.4 DoS advisories (memory-exhaustion on namespace decls;
+  # quadratic on duplicate attribute names). Reached ONLY through
+  # typst -> hayagriva -> citationberg (bibliography CSL XML parsing), pulled by
+  # the `kite-pdf` workspace crate. The shipped `kite` MCP server does NOT depend
+  # on kite-pdf/typst (browser_pdf uses Chrome CDP Page.printToPDF), so these are
+  # not in the server's attack surface. citationberg pins ^0.38.1; awaiting an
+  # upstream typst/citationberg bump. RE-AUDIT if kite-pdf ever ships in a binary.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]
