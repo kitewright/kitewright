@@ -27,7 +27,9 @@ jobs:
             target: aarch64-apple-darwin
             pkg: darwin-arm64
             exe: kite
-          - runner: macos-13
+          # Cross-compile x86_64 on an Apple-Silicon runner: macos-13 (Intel)
+          # runners are being retired and are scarce/stuck in the queue.
+          - runner: macos-14
             target: x86_64-apple-darwin
             pkg: darwin-x64
             exe: kite
