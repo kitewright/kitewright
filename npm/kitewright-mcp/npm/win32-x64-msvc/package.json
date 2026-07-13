@@ -1,0 +1,10 @@
+{
+  "name": "@kitewright/mcp-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "Prebuilt kite binary for kitewright-mcp on Windows x64.",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "files": ["kite.exe"]
+}

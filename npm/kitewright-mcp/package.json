@@ -1,0 +1,30 @@
+{
+  "name": "kitewright-mcp",
+  "version": "0.1.0",
+  "description": "Kitewright browser-automation MCP server — run with npx, no build step. Backed by the Rust kite engine.",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "bin": {
+    "kitewright-mcp": "bin.js"
+  },
+  "files": [
+    "bin.js"
+  ],
+  "optionalDependencies": {
+    "@kitewright/mcp-darwin-arm64": "0.1.0",
+    "@kitewright/mcp-darwin-x64": "0.1.0",
+    "@kitewright/mcp-linux-x64-gnu": "0.1.0",
+    "@kitewright/mcp-win32-x64-msvc": "0.1.0"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "browser",
+    "automation",
+    "playwright-alternative",
+    "kitewright"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
