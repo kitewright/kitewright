@@ -1,7 +1,7 @@
 {
   "name": "@kitewright/mcp-darwin-arm64",
   "version": "0.1.0",
-  "description": "Prebuilt kite binary for kitewright-mcp on macOS arm64.",
+  "description": "Prebuilt kite binary for @kitewright/mcp on macOS arm64.",
   "license": "MIT",
   "repository": "github:kitewright/kitewright",
   "os": ["darwin"],
