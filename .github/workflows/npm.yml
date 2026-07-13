@@ -9,7 +9,7 @@ name: npm (@kitewright/node)
 # rights). NOTE: not yet run end-to-end — the first real run validates the matrix.
 on:
   push:
-    tags: ["v*"]
+    tags: ["node-v*"]
   workflow_dispatch:
 
 defaults:
@@ -71,10 +71,10 @@ jobs:
       - name: Move .node files into per-platform npm dirs
         run: npx napi artifacts --output-dir artifacts --npm-dir npm
       - name: Publish (dry-run on manual dispatch)
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ !startsWith(github.ref, 'refs/tags/node-v') }}
         run: npx napi prepublish --npm-dir npm -t npm --dry-run
       - name: Publish platform packages + main (on tag)
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ startsWith(github.ref, 'refs/tags/node-v') }}
         run: |
           npx napi prepublish --npm-dir npm -t npm
           npm publish --access public
