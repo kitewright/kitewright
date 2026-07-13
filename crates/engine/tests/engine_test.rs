@@ -668,6 +668,97 @@ async fn save_and_restore_state_across_sessions() {
     engine.shutdown().await;
 }
 
+/// An authenticated session must survive an idle reap: cookies captured after
+/// navigation are auto-restored onto the relaunched browser, so the agent stays
+/// logged in across a pause that reaps the browser. This is the #1 gap vs
+/// Playwright (which keeps the browser alive) — verified end-to-end here.
+#[tokio::test(flavor = "multi_thread")]
+async fn auth_survives_idle_reap_via_auto_restore() {
+    if chrome_path().is_none() {
+        eprintln!("SKIP: no Chromium found (set BROWSER_EXECUTABLE)");
+        return;
+    }
+    let url = start_fixture_server().await;
+    // idle_ttl = 2s so the reaper kills the idle browser during our sleep below.
+    let engine = test_engine(Duration::from_secs(2));
+    let session = engine.create_session();
+
+    // Establish an authenticated session: set a cookie + localStorage, then
+    // re-navigate so the post-navigation auto-capture snapshots the cookie.
+    session.navigate(&url).await.expect("navigate failed");
+    session
+        .click("#set-state-btn", None)
+        .await
+        .expect("set state failed");
+    session
+        .wait_for(None, Some("state-set"), Some(2_000))
+        .await
+        .expect("state was not set");
+    session
+        .navigate(&url)
+        .await
+        .expect("re-navigate (to capture cookie) failed");
+
+    // Let the idle reaper kill the browser (ttl 2s, reaper period 2s).
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // The next navigation relaunches the browser; auto-restore must replay the
+    // cookie so we are still authenticated.
+    session
+        .navigate(&url)
+        .await
+        .expect("navigate after reap failed");
+    session
+        .click("#read-state-btn", None)
+        .await
+        .expect("read state failed");
+    let cookie = session.extract(None, "#cookie-out", None).await.unwrap();
+    assert!(
+        cookie
+            .first()
+            .map(|c| c.contains("sess-A-value"))
+            .unwrap_or(false),
+        "auth cookie did NOT survive the idle reap (auto-restore failed): {cookie:?}"
+    );
+
+    session.close().await;
+    engine.shutdown().await;
+}
+
+/// browser_fill_secret must resolve an `env:` reference server-side and type the
+/// resolved value into the field — the plaintext only ever lives in the server,
+/// never in the tool call. A bare (schemeless) reference is rejected.
+#[tokio::test(flavor = "multi_thread")]
+async fn fill_secret_resolves_env_and_types_it() {
+    if chrome_path().is_none() {
+        eprintln!("SKIP: no Chromium found (set BROWSER_EXECUTABLE)");
+        return;
+    }
+    std::env::set_var("KW_FILL_SECRET_TEST", "hunter2-secret");
+    let engine = test_engine(Duration::from_secs(60));
+    let s = engine.create_session();
+    s.set_content("<input id=pw>", None)
+        .await
+        .expect("set_content failed");
+    s.fill_secret("#pw", "env:KW_FILL_SECRET_TEST", false, None)
+        .await
+        .expect("fill_secret failed");
+    let value = s
+        .evaluate("document.getElementById('pw').value")
+        .await
+        .expect("evaluate failed");
+    assert_eq!(value, serde_json::json!("hunter2-secret"), "secret not typed");
+    // A schemeless (plaintext) reference is refused.
+    assert!(
+        s.fill_secret("#pw", "not-a-reference", false, None)
+            .await
+            .is_err(),
+        "plaintext secret ref should be rejected"
+    );
+    s.close().await;
+    engine.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn pdf_returns_valid_pdf_bytes() {
     if chrome_path().is_none() {

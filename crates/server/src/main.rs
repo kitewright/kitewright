@@ -92,6 +92,20 @@ struct TypeParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+struct FillSecretParams {
+    /// CSS selector of the input to type the secret into
+    selector: String,
+    /// Secret REFERENCE resolved server-side — `env:NAME` or `file:/path`. Never
+    /// the plaintext value (that's the whole point: it stays out of the transcript).
+    secret_ref: String,
+    /// Press Enter after typing (submit forms)
+    #[serde(default)]
+    press_enter: bool,
+    /// Actionability timeout in milliseconds (default 5000, max 30000)
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 struct PressKeyParams {
     /// DOM key value, e.g. Enter, Tab, Escape, Backspace, ArrowDown, PageDown
     key: String,
@@ -507,6 +521,28 @@ impl BrowserMcp {
             .map_err(err)?;
         Ok(json_text(serde_json::json!({
             "typed": text, "selector": selector, "pressed_enter": press_enter
+        })))
+    }
+
+    #[tool(
+        description = "Type a SECRET (e.g. a password) into an input WITHOUT the plaintext appearing in the tool call/transcript. Pass `secret_ref` as `env:NAME` (a server environment variable) or `file:/path` (a local file, opt-in via KITE_ALLOW_SECRET_FILES). kitewright resolves it server-side and types it, clearing the field first."
+    )]
+    async fn browser_fill_secret(
+        &self,
+        Parameters(FillSecretParams {
+            selector,
+            secret_ref,
+            press_enter,
+            timeout_ms,
+        }): Parameters<FillSecretParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.session
+            .fill_secret(&selector, &secret_ref, press_enter, timeout_ms)
+            .await
+            .map_err(err)?;
+        // Echo the reference, never the resolved value.
+        Ok(json_text(serde_json::json!({
+            "filled_secret": true, "selector": selector, "secret_ref": secret_ref, "pressed_enter": press_enter
         })))
     }
 
