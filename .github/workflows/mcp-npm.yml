@@ -57,7 +57,15 @@ jobs:
         shell: bash
         run: |
           echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
-          npm publish --access public
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          # Idempotent: skip if this version is already on npm (e.g. darwin-arm64
+          # was published from a local release build) so re-runs don't 403.
+          if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+            echo "$PKG@$VER already published — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -72,6 +80,14 @@ jobs:
           registry-url: https://registry.npmjs.org
       - name: Publish kitewright-mcp launcher
         working-directory: npm/kitewright-mcp
-        run: npm publish --access public
+        shell: bash
+        run: |
+          PKG=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$PKG@$VER" version >/dev/null 2>&1; then
+            echo "$PKG@$VER already published — skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
