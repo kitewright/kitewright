@@ -808,16 +808,19 @@ impl HttpGuard {
         }
     }
 
-    /// The client IP to rate-limit on: the socket peer, or the first
+    /// The client IP to rate-limit on: the socket peer, or the RIGHTMOST
     /// `X-Forwarded-For` hop when `MCP_TRUST_PROXY` is set (deployments behind a
-    /// reverse proxy, where every peer IP is the proxy's).
+    /// reverse proxy, where every peer IP is the proxy's). The rightmost hop is
+    /// the one the trusted proxy appended (the real peer); the leftmost is
+    /// client-supplied and spoofable, so keying on it would let a client rotate
+    /// XFF values to evade per-IP limits.
     fn client_ip(&self, addr: &SocketAddr, req: &Request) -> IpAddr {
         if self.trust_proxy {
             if let Some(ip) = req
                 .headers()
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
+                .and_then(|v| v.split(',').next_back())
                 .map(str::trim)
                 .and_then(|s| s.parse::<IpAddr>().ok())
             {

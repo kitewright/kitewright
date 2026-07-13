@@ -43,6 +43,10 @@ use tokio::task::JoinHandle;
 
 const MAX_TEXT_CHARS: usize = 20_000;
 const MAX_SNAPSHOT_CHARS: usize = 15_000;
+/// Per-entry cap for auto-captured console/log text and network URLs. Bounds
+/// memory when a hostile page emits huge console args or `data:` request URLs
+/// (CAPTURE_CAP bounds the count; this bounds each entry's size).
+const MAX_CAPTURE_ENTRY_CHARS: usize = 8_000;
 /// Recursion-depth cap for the accessibility-tree walk (stack-overflow guard on
 /// pathologically deep pages). Far deeper than any real document nests.
 const MAX_AX_DEPTH: usize = 256;
@@ -741,6 +745,10 @@ impl Engine {
     }
 
     async fn open(&self, url: &str) -> Result<Page> {
+        // Enforce the scheme guard here too so the one-shot API (and any binding
+        // built on it, e.g. the Node facade) can't skip validation the way only
+        // the session `goto` path had it.
+        validate_navigation_url(url)?;
         let mut guard = self.handle.lock().await;
         self.launch_if_needed(&mut guard).await?;
         let handle = guard.as_mut().unwrap();
@@ -1792,7 +1800,7 @@ impl BrowserSession {
                         &shared.console,
                         ConsoleMessage {
                             level: e.r#type.as_ref().to_string(),
-                            text: console_args_to_text(&e.args),
+                            text: cap(console_args_to_text(&e.args), MAX_CAPTURE_ENTRY_CHARS),
                         },
                     );
                 }
@@ -1807,7 +1815,7 @@ impl BrowserSession {
                         &shared.console,
                         ConsoleMessage {
                             level: e.entry.level.as_ref().to_string(),
-                            text: e.entry.text.clone(),
+                            text: cap(e.entry.text.clone(), MAX_CAPTURE_ENTRY_CHARS),
                         },
                     );
                 }
@@ -1823,7 +1831,7 @@ impl BrowserSession {
                         NetworkRequest {
                             request_id: e.request_id.inner().clone(),
                             method: e.request.method.clone(),
-                            url: e.request.url.clone(),
+                            url: cap(e.request.url.clone(), MAX_CAPTURE_ENTRY_CHARS),
                             status: None,
                             resource_type: e.r#type.as_ref().map(|t| t.as_ref().to_string()),
                         },
@@ -1961,7 +1969,9 @@ async fn extract_from_page(
         }
     );
     let values: Vec<String> = page.evaluate(js).await?.into_value().unwrap_or_default();
-    Ok(values)
+    // Cap each element's text so a hostile page with huge innerText can't inflate
+    // the response (match count is already bounded to 50 in the JS above).
+    Ok(values.into_iter().map(|v| cap(v, MAX_TEXT_CHARS)).collect())
 }
 
 async fn find_element(page: &Page, selector: &str) -> Result<chromiumoxide::Element> {
@@ -3271,7 +3281,20 @@ fn validate_navigation_url(url: &str) -> Result<()> {
         _ => return Ok(()),
     };
     match scheme.as_str() {
-        "http" | "https" | "about" | "data" | "blob" => Ok(()),
+        "http" | "https" | "data" | "blob" => Ok(()),
+        // Only inert about: pages. Chrome maps about:version / about:gpu / etc.
+        // to privileged chrome:// internals — the very pages the deny-arm blocks.
+        "about" => {
+            let rest = &normalized["about:".len()..];
+            let path = rest.split(['?', '#']).next().unwrap_or("");
+            if path == "blank" || path == "srcdoc" {
+                Ok(())
+            } else {
+                bail!(
+                    "navigation to {normalized:?} is not allowed (only about:blank / about:srcdoc)"
+                )
+            }
+        }
         "file" => {
             if std::env::var("KITE_ALLOW_FILE_URLS").is_ok() {
                 Ok(())
@@ -3433,5 +3456,44 @@ mod tests {
         // Empty / missing dir → None.
         assert!(find_installed_browser_in(&tmp.join("nope")).is_none());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn validate_navigation_url_scheme_guard() {
+        // Allowed web schemes.
+        for ok in [
+            "https://example.com",
+            "http://x/y",
+            "data:text/html,hi",
+            "blob:abc",
+        ] {
+            assert!(
+                validate_navigation_url(ok).is_ok(),
+                "{ok} should be allowed"
+            );
+        }
+        // Inert about: pages allowed; privileged about: (→ chrome://) rejected.
+        assert!(validate_navigation_url("about:blank").is_ok());
+        assert!(validate_navigation_url("about:blank#frag").is_ok());
+        assert!(validate_navigation_url("about:srcdoc").is_ok());
+        assert!(validate_navigation_url("about:version").is_err());
+        assert!(validate_navigation_url("about:gpu").is_err());
+        // Privileged / dangerous schemes rejected.
+        for bad in [
+            "chrome://version",
+            "javascript:alert(1)",
+            "view-source:http://x",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                validate_navigation_url(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+        // Normalization: case + leading-space + embedded-tab can't smuggle a scheme past the guard.
+        assert!(validate_navigation_url("FILE:///etc/passwd").is_err());
+        assert!(validate_navigation_url(" file:///etc/passwd").is_err());
+        assert!(validate_navigation_url("fi\tle:///etc/passwd").is_err());
+        assert!(validate_navigation_url("jAvAsCrIpt:alert(1)").is_err());
     }
 }
