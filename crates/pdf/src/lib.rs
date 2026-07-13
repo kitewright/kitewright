@@ -29,19 +29,30 @@ pub use request::{Backend, Margin, RenderError, RenderRequest};
 pub struct AppState {
     #[cfg(feature = "chromium")]
     pub engine: kitewright_engine::Engine,
+    /// Caps concurrent renders so a burst of requests can't exhaust Chromium
+    /// tabs / Typst CPU threads (an uncancellable Typst compile keeps burning a
+    /// thread even after the client times out). Tune via KITE_PDF_MAX_CONCURRENCY.
+    pub render_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let permits = std::env::var("KITE_PDF_MAX_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(4);
+        let render_semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(permits));
         #[cfg(feature = "chromium")]
         {
             AppState {
                 engine: kitewright_engine::Engine::new(kitewright_engine::EngineConfig::default()),
+                render_semaphore,
             }
         }
         #[cfg(not(feature = "chromium"))]
         {
-            AppState {}
+            AppState { render_semaphore }
         }
     }
 }

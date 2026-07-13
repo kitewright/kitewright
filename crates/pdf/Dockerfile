@@ -30,6 +30,11 @@ RUN apt-get update && \
         fonts-liberation && \
     rm -rf /var/lib/apt/lists/*
 
+# Binds all interfaces so the container is reachable. Because that's network-
+# exposed, the server FAILS TO START without auth: run with
+# `-e KITE_PDF_AUTH_TOKEN=<token>` (recommended), or `-e KITE_PDF_INSECURE=1` to
+# override on a trusted network. The render endpoint can fetch on your behalf, so
+# keep it behind auth + network policy (see KITE_PDF_ALLOW_PRIVATE_IPS).
 ENV BROWSER_EXECUTABLE=/usr/bin/chromium \
     BROWSER_NO_SANDBOX=1 \
     KITE_HEADLESS=1 \

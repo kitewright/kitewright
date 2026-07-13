@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 axum = "0.8"
+url = "2"
 
 # Chromium backend (optional; only compiled with the `chromium` feature).
 kitewright-engine = { path = "../engine", optional = true }
