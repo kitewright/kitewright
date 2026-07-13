@@ -1,0 +1,11 @@
+{
+  "name": "@kitewright/mcp-linux-x64-gnu",
+  "version": "0.1.0",
+  "description": "Prebuilt kite binary for kitewright-mcp on Linux x64 (glibc).",
+  "license": "MIT",
+  "repository": "github:kitewright/kitewright",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "libc": ["glibc"],
+  "files": ["kite"]
+}
