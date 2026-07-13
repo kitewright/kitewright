@@ -13,7 +13,8 @@ kite-pdf — HTML/Typst → PDF service + CLI
 
 USAGE:
   kite-pdf [serve]                 Run the HTTP render service (default).
-                                   Bind address: $KITE_PDF_BIND (default 0.0.0.0:8091).
+                                   Bind address: $KITE_PDF_BIND (default 127.0.0.1:8091,
+                                   loopback-only; exposing it needs KITE_PDF_AUTH_TOKEN).
   kite-pdf render [OPTIONS] -o OUT.pdf
 
 RENDER OPTIONS:
