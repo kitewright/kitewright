@@ -525,7 +525,7 @@ impl BrowserMcp {
     }
 
     #[tool(
-        description = "Type a SECRET (e.g. a password) into an input WITHOUT the plaintext appearing in the tool call/transcript. Pass `secret_ref` as `env:NAME` (a server environment variable) or `file:/path` (a local file, opt-in via KITE_ALLOW_SECRET_FILES). kitewright resolves it server-side and types it, clearing the field first."
+        description = "Type a SECRET (e.g. a password) into an input WITHOUT the plaintext appearing in the tool call/transcript. Pass `secret_ref` as `env:NAME` (a server environment variable) or `file:/path` (a local file, opt-in via KITE_ALLOW_SECRET_FILES + a required KITE_SECRET_DIR fence). kitewright resolves it server-side and types it, clearing the field first."
     )]
     async fn browser_fill_secret(
         &self,
