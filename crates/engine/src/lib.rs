@@ -1275,7 +1275,7 @@ impl BrowserSession {
     /// Type a SECRET into `selector` without the plaintext ever appearing in the
     /// tool call. `secret_ref` is a reference resolved server-side:
     /// `env:NAME` (from the server's environment) or `file:/path` (from disk,
-    /// opt-in via `KITE_ALLOW_SECRET_FILES`, optionally fenced to
+    /// opt-in via `KITE_ALLOW_SECRET_FILES` and fenced to a required
     /// `KITE_SECRET_DIR`). Clears the field first, then types the resolved value.
     pub async fn fill_secret(
         &self,
@@ -1987,10 +1987,11 @@ fn resolve_actionable_timeout(timeout_ms: Option<u64>) -> Duration {
 /// Resolve a secret reference to its plaintext, server-side, so the value never
 /// travels in the MCP tool call. `env:NAME` reads `NAME` from the server's
 /// environment. `file:PATH` reads `PATH` from disk — opt-in via
-/// `KITE_ALLOW_SECRET_FILES=1`, and if `KITE_SECRET_DIR` is set the canonicalized
-/// path must live under it (mirroring the `KITE_ALLOW_FILE_URLS` anti-exfiltration
-/// guard); a trailing newline is trimmed. A bare value with no scheme is rejected
-/// — passing plaintext would defeat the purpose of the tool.
+/// `KITE_ALLOW_SECRET_FILES=1` AND fenced to a required `KITE_SECRET_DIR` (the
+/// canonicalized path must live under it, so arbitrary host files can't be read;
+/// mirrors the `KITE_ALLOW_FILE_URLS` anti-exfiltration guard); a trailing
+/// newline is trimmed. A bare value with no scheme is rejected — passing
+/// plaintext would defeat the purpose of the tool.
 fn resolve_secret_ref(reference: &str) -> Result<String> {
     if let Some(name) = reference.strip_prefix("env:") {
         std::env::var(name).map_err(|_| anyhow!("secret env var {name:?} is not set on the server"))
@@ -2001,16 +2002,23 @@ fn resolve_secret_ref(reference: &str) -> Result<String> {
                  reading secret values from local files"
             );
         }
+        // Require a directory fence: without it, an enabled file-secret could
+        // read ANY host file (/etc/passwd, ~/.ssh/id_rsa, …) and exfiltrate it
+        // by typing it into a field. KITE_SECRET_DIR bounds what's readable.
+        let dir = std::env::var("KITE_SECRET_DIR").map_err(|_| {
+            anyhow!(
+                "file: secrets require KITE_SECRET_DIR to be set (the directory secret files may \
+                 be read from) — this fences reads so arbitrary host files can't be exfiltrated"
+            )
+        })?;
+        let allowed = std::path::Path::new(&dir)
+            .canonicalize()
+            .context("KITE_SECRET_DIR does not exist")?;
         let canon = std::path::Path::new(path)
             .canonicalize()
             .map_err(|e| anyhow!("secret file {path:?}: {e}"))?;
-        if let Ok(dir) = std::env::var("KITE_SECRET_DIR") {
-            let allowed = std::path::Path::new(&dir)
-                .canonicalize()
-                .context("KITE_SECRET_DIR does not exist")?;
-            if !canon.starts_with(&allowed) {
-                bail!("secret file {path:?} is outside KITE_SECRET_DIR");
-            }
+        if !canon.starts_with(&allowed) {
+            bail!("secret file {path:?} is outside KITE_SECRET_DIR");
         }
         let content = std::fs::read_to_string(&canon)
             .map_err(|e| anyhow!("read secret file {path:?}: {e}"))?;
