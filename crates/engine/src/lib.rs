@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::accessibility as ax;
 use chromiumoxide::cdp::browser_protocol::browser::BrowserContextId;
@@ -109,15 +109,17 @@ impl Default for EngineConfig {
         // Headed by default; KITE_HEADLESS opts into headless.
         let headful = std::env::var("KITE_HEADLESS").is_err();
         Self {
-            // Headless (server) reaps aggressively to free ~300MB. Headed is
-            // driven by a human at human pace — with pauses to read, type
-            // credentials, or coordinate — so a 120s reap would kill the window
-            // mid-task; give it a much longer idle window.
-            idle_ttl: if headful {
-                Duration::from_secs(1800)
-            } else {
-                Duration::from_secs(120)
-            },
+            // Keep the browser alive across normal between-turn pauses (an agent
+            // reading, coordinating, or a human typing credentials) so a session
+            // isn't dropped mid-flow — the #1 gap vs Playwright, which never reaps
+            // mid-session. Default 30min idle window (headed never reaps at all);
+            // tune with KITE_IDLE_TIMEOUT_SECS on a memory-constrained server. A
+            // reap that does happen is recovered by the cookie auto-restore.
+            idle_ttl: std::env::var("KITE_IDLE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_secs)
+                .unwrap_or(Duration::from_secs(1800)),
             nav_timeout: Duration::from_secs(20),
             no_sandbox: std::env::var("BROWSER_NO_SANDBOX").is_ok(),
             headful,
@@ -820,6 +822,11 @@ struct SessionState {
     /// Applied automatically after the next navigation to that origin, since
     /// localStorage can only be written while on the matching origin.
     pending_localstorage: Option<(String, HashMap<String, String>)>,
+    /// Storage state (cookies + localStorage + url) auto-captured after each
+    /// navigation, replayed onto the fresh browser context when the browser is
+    /// reaped or crashes so an authenticated session survives a relaunch. Never
+    /// cleared on relaunch — only overwritten by the next successful capture.
+    auto_state: Option<String>,
     /// Previous snapshot text, used by [`BrowserSession::snapshot_diff`] to emit
     /// only what changed since the last snapshot in this session.
     last_snapshot: Option<String>,
@@ -1265,6 +1272,23 @@ impl BrowserSession {
         .await
     }
 
+    /// Type a SECRET into `selector` without the plaintext ever appearing in the
+    /// tool call. `secret_ref` is a reference resolved server-side:
+    /// `env:NAME` (from the server's environment) or `file:/path` (from disk,
+    /// opt-in via `KITE_ALLOW_SECRET_FILES`, optionally fenced to
+    /// `KITE_SECRET_DIR`). Clears the field first, then types the resolved value.
+    pub async fn fill_secret(
+        &self,
+        selector: &str,
+        secret_ref: &str,
+        press_enter: bool,
+        timeout_ms: Option<u64>,
+    ) -> Result<()> {
+        let value = resolve_secret_ref(secret_ref)?;
+        self.type_text(selector, &value, true, press_enter, timeout_ms)
+            .await
+    }
+
     /// Fill several inputs in one call. Each field is typed with `clear=true`
     /// (replace existing value). Never aborts on the first failure: returns a
     /// per-field outcome so an agent sees exactly which fields succeeded.
@@ -1648,14 +1672,15 @@ impl BrowserSession {
         // First use, or the page belongs to a dead browser launch.
         let lost_state = st.page.take().is_some();
         st.context_id = None;
+        // Snapshot the auto-restore state to replay after the fresh page is
+        // built. Never clear auto_state itself here — it's the only copy.
+        let recover_state = if lost_state {
+            st.auto_state.clone()
+        } else {
+            None
+        };
         if lost_state {
             st.last_url = None;
-            if !navigating {
-                bail!(
-                    "the browser was restarted (idle reap or crash) and this session's \
-                     page state was lost — call browser_navigate to start again"
-                );
-            }
         }
         // Prefer a pre-warmed context from the pool (zero context-creation
         // latency); the pool holds FRESH, unused contexts, so cookie isolation
@@ -1698,10 +1723,40 @@ impl BrowserSession {
         // the page + the session's std-Mutex buffers, no async locks).
         drop(guard);
         self.arm_capture(&page).await;
+        // Replay captured cookies + localStorage onto the fresh context so the
+        // recreated session is still authenticated after a reap/crash.
+        let recovered = match &recover_state {
+            Some(state) => match apply_saved_state(&page, st, state).await {
+                Ok(()) => {
+                    tracing::info!("auto-restore: replayed session cookies after relaunch");
+                    true
+                }
+                Err(e) => {
+                    tracing::warn!("auto-restore: replay failed: {e:#}");
+                    false
+                }
+            },
+            None => false,
+        };
         // Lazily top the pool back up in the background (never blocks this call
         // and never keeps the browser alive).
         engine.spawn_pool_refill();
         tracing::debug!(relaunched = lost_state, "session page created");
+        // A non-navigating op can't run on the blank recreated page; ask the
+        // caller to navigate. Cookies are already restored, so the reload stays
+        // authenticated (auth survives the reap/crash).
+        if lost_state && !navigating {
+            if recovered {
+                bail!(
+                    "the browser was restarted (idle reap or crash); this session's cookies \
+                     were preserved — call browser_navigate to reload (you'll still be signed in)"
+                );
+            }
+            bail!(
+                "the browser was restarted (idle reap or crash) and this session's page state \
+                 was lost — call browser_navigate to start again"
+            );
+        }
         Ok(page)
     }
 
@@ -1815,6 +1870,13 @@ impl BrowserSession {
                 .unwrap_or_else(|| url.to_string()),
         );
         apply_pending_localstorage(st, page).await;
+        // Snapshot cookies + localStorage so an authenticated session survives a
+        // reap/crash (see ensure_page's relaunch branch). Log — don't swallow —
+        // a capture failure so it's diagnosable rather than a silent no-restore.
+        match capture_state(page).await {
+            Ok(state) => st.auto_state = Some(state),
+            Err(e) => tracing::warn!("auto-restore: failed to capture session state: {e:#}"),
+        }
         Ok(())
     }
 }
@@ -1919,6 +1981,42 @@ fn resolve_actionable_timeout(timeout_ms: Option<u64>) -> Duration {
     match timeout_ms {
         Some(ms) => Duration::from_millis(ms.min(WAIT_FOR_MAX_TIMEOUT_MS)),
         None => actionable_timeout(),
+    }
+}
+
+/// Resolve a secret reference to its plaintext, server-side, so the value never
+/// travels in the MCP tool call. `env:NAME` reads `NAME` from the server's
+/// environment. `file:PATH` reads `PATH` from disk — opt-in via
+/// `KITE_ALLOW_SECRET_FILES=1`, and if `KITE_SECRET_DIR` is set the canonicalized
+/// path must live under it (mirroring the `KITE_ALLOW_FILE_URLS` anti-exfiltration
+/// guard); a trailing newline is trimmed. A bare value with no scheme is rejected
+/// — passing plaintext would defeat the purpose of the tool.
+fn resolve_secret_ref(reference: &str) -> Result<String> {
+    if let Some(name) = reference.strip_prefix("env:") {
+        std::env::var(name).map_err(|_| anyhow!("secret env var {name:?} is not set on the server"))
+    } else if let Some(path) = reference.strip_prefix("file:") {
+        if std::env::var("KITE_ALLOW_SECRET_FILES").is_err() {
+            bail!(
+                "file: secrets are disabled by default; set KITE_ALLOW_SECRET_FILES=1 to allow \
+                 reading secret values from local files"
+            );
+        }
+        let canon = std::path::Path::new(path)
+            .canonicalize()
+            .map_err(|e| anyhow!("secret file {path:?}: {e}"))?;
+        if let Ok(dir) = std::env::var("KITE_SECRET_DIR") {
+            let allowed = std::path::Path::new(&dir)
+                .canonicalize()
+                .context("KITE_SECRET_DIR does not exist")?;
+            if !canon.starts_with(&allowed) {
+                bail!("secret file {path:?} is outside KITE_SECRET_DIR");
+            }
+        }
+        let content = std::fs::read_to_string(&canon)
+            .map_err(|e| anyhow!("read secret file {path:?}: {e}"))?;
+        Ok(content.trim_end_matches(['\n', '\r']).to_string())
+    } else {
+        bail!("secret must be referenced as env:NAME or file:PATH (never pass the plaintext value)")
     }
 }
 
