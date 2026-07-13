@@ -62,24 +62,20 @@ claude mcp add kitewright -- npx -y @kitewright/mcp
 optional per-platform dependency, esbuild-style) and starts a stdio MCP server —
 no Rust toolchain, no build. See [`npm/kitewright-mcp`](npm/kitewright-mcp).
 
-Or install the `kite` binary directly. Pick whichever is easiest:
+Prefer the raw `kite` binary? (npx above is the easy path; these need a Rust toolchain.)
 
 ```bash
-# Prebuilt binary (fastest) — downloads the GitHub Release asset for your platform:
-cargo binstall kitewright
+# From the public repo — builds + installs the `kite` binary:
+cargo install --git https://github.com/kitewright/kitewright kitewright   # → ~/.cargo/bin/kite
 
-# From a checkout, via cargo:
-cargo install --path crates/server        # → ~/.cargo/bin/kite
-
-# Homebrew (tap TBD — formula template in packaging/kitewright.rb):
-# brew install kitewright/tap/kitewright
+# From a local checkout:
+cargo install --path crates/server
 
 # Docker (headless Chromium bundled in the image):
 docker run --rm -p 8090:8090 kitewright   # build locally: docker build -t kitewright .
-
-# Build from source (needs a Rust toolchain):
-cargo build --release -p kitewright        # → target/release/kite
 ```
+
+> Not yet published to crates.io or Homebrew — `cargo binstall`/`brew` aren't wired up. Use `npx @kitewright/mcp` (no toolchain) or the `cargo install --git` line above.
 
 ### Get a browser
 
