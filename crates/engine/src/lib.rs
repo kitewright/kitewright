@@ -2456,11 +2456,16 @@ async fn dispatch_key(page: &Page, key: &str) -> Result<()> {
     // A text-producing KeyDown is not idempotent (retrying re-inserts the char);
     // compute this before key_down_type is moved into the builder.
     let text_producing = matches!(key_down_type, DispatchKeyEventType::KeyDown);
+    // Set ONLY windowsVirtualKeyCode, never nativeVirtualKeyCode. Setting a
+    // native code that doesn't match the host OS (we only know the Windows code)
+    // makes headless Chrome derive event.key from the keyboard layout and return
+    // "Unidentified" for control keys (Escape/Enter/Tab/arrows) — overriding the
+    // explicit `key`. Puppeteer sets only the Windows code; matching it makes
+    // control keys reach page-level handlers in headless as they do headed.
     cmd = cmd
         .key(def.key)
         .code(def.code)
-        .windows_virtual_key_code(def.key_code)
-        .native_virtual_key_code(def.key_code);
+        .windows_virtual_key_code(def.key_code);
     let down = cmd
         .clone()
         .r#type(key_down_type)
