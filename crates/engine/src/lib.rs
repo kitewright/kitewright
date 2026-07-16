@@ -385,6 +385,11 @@ struct BrowserHandle {
     /// never keep the process alive (it never touches `last_used`) and drains
     /// automatically, refilling lazily on the next demand.
     pool: Vec<PooledContext>,
+    /// Chrome's initial tab from launch. Sessions run in their own browser
+    /// contexts (a separate window when headed), so this default-context tab is
+    /// never used — it's closed once the first real page exists, removing the
+    /// stray blank window. `None` after that (or if it couldn't be captured).
+    startup_page: Option<Page>,
 }
 
 async fn close_handle(mut h: BrowserHandle, reason: &str) {
@@ -505,6 +510,17 @@ impl Engine {
             .as_ref()
             .map(|h| h.pool.len())
             .unwrap_or(0)
+    }
+
+    /// Number of open pages/targets in the live browser (0 when not running).
+    /// Exposed for tests — used to assert Chrome's initial launch tab is retired
+    /// once a real session page exists (see `BrowserHandle::startup_page`).
+    pub async fn page_count(&self) -> usize {
+        let guard = self.handle.lock().await;
+        match guard.as_ref() {
+            Some(h) => h.browser.pages().await.map(|p| p.len()).unwrap_or(0),
+            None => 0,
+        }
     }
 
     /// Explicitly shut the browser down (also called by the idle reaper).
@@ -684,6 +700,19 @@ impl Engine {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "browser launched"
         );
+        // Capture Chrome's initial launch tab so we can close it once a real
+        // session page exists (see close_startup_page). Poll briefly: the
+        // initial target isn't always registered the instant launch returns.
+        let mut startup_page = None;
+        for _ in 0..20 {
+            match browser.pages().await {
+                Ok(pages) if !pages.is_empty() => {
+                    startup_page = pages.into_iter().next();
+                    break;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
         *guard = Some(BrowserHandle {
             browser,
             event_task,
@@ -691,6 +720,7 @@ impl Engine {
             data_dir,
             generation: seq,
             pool: Vec::new(),
+            startup_page,
         });
         Ok(())
     }
@@ -756,6 +786,10 @@ impl Engine {
         let page = tokio::time::timeout(self.config.nav_timeout, handle.browser.new_page(url))
             .await
             .context("navigation timed out")??;
+        // A real page now exists — retire Chrome's unused launch tab.
+        if let Some(sp) = handle.startup_page.take() {
+            let _ = sp.close().await;
+        }
         Ok(page)
     }
 
@@ -1725,6 +1759,12 @@ impl BrowserSession {
         st.page = Some(page.clone());
         st.context_id = ctx;
         st.generation = handle.generation;
+        // A real session page now exists — retire Chrome's unused launch tab so
+        // it doesn't linger as a stray blank window (headed mode). No-op after
+        // the first session per launch.
+        if let Some(sp) = handle.startup_page.take() {
+            let _ = sp.close().await;
+        }
         // A fresh page has no dialog handler wired onto it yet.
         st.dialog_armed = false;
         // Release the engine handle lock before arming capture (it only touches

@@ -1432,3 +1432,24 @@ async fn shared_cache_dir_is_created_and_reused() {
     engine.shutdown().await;
     let _ = std::fs::remove_dir_all(&cache_dir);
 }
+
+/// Regression: Chrome opens an initial tab on launch, but sessions run in their
+/// own browser contexts (a separate window when headed), so that default tab is
+/// never used. It must be closed once a real session page exists — otherwise it
+/// lingers as a stray blank window. With pooling disabled, exactly one page
+/// (the session page) should remain after a navigate.
+#[tokio::test]
+async fn session_navigate_retires_the_launch_tab() {
+    let engine = test_engine_cfg(Duration::from_secs(120), 0);
+    let session = engine.create_session();
+    session
+        .navigate("about:blank")
+        .await
+        .expect("navigate failed");
+    assert_eq!(
+        engine.page_count().await,
+        1,
+        "Chrome's initial launch tab was not retired (stray blank window)"
+    );
+    engine.shutdown().await;
+}
