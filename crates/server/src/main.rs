@@ -947,6 +947,26 @@ async fn guard_middleware(
     next.run(req).await
 }
 
+const USAGE: &str = "\
+kite — kitewright browser-automation MCP server
+
+USAGE:
+  kite [--stdio]        Start the MCP server. Default: Streamable HTTP on
+                        127.0.0.1:8090 (/mcp). With --stdio (or KITE_STDIO=1):
+                        local stdio transport for Claude Desktop/Code/Cursor.
+  kite install          Download a headless Chromium into the cache and exit.
+  kite --version, -V    Print version and exit.
+  kite --help, -h       Show this help.
+
+ENV:
+  KITE_STDIO=1               Force stdio transport.
+  KITE_HEADLESS=1            Run the browser headless (default: headed).
+  KITE_IDLE_TIMEOUT_SECS=N   Reap the browser after N seconds idle (default 1800;
+                             headed sessions never reap).
+  MCP_HTTP_BIND=host:port    HTTP bind address (default 127.0.0.1:8090).
+  MCP_AUTH_TOKEN=<token>     Require this bearer token on /mcp (HTTP mode).
+";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Always log to stderr: in stdio mode, stdout IS the MCP protocol channel
@@ -961,6 +981,18 @@ async fn main() -> Result<()> {
     // `kite install`: download a headless Chromium into the cache and exit
     // (never starts a server). Must be the first positional argument.
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // `--version` / `-V` and `--help` / `-h`: print and exit without starting a
+    // server (otherwise an unknown flag silently boots the HTTP server).
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("kite {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return Ok(());
+    }
+
     if args.first().map(String::as_str) == Some("install") {
         return install::run(&args[1..]).await;
     }
