@@ -1,0 +1,14 @@
+# Smithery configuration — https://smithery.ai/docs/build/project-config
+# Kitewright ships as an npm package (@kitewright/mcp) that runs as a stdio MCP
+# server via npx with no build step and no required configuration.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties: {}
+    required: []
+  commandFunction: |-
+    (config) => ({
+      command: "npx",
+      args: ["-y", "@kitewright/mcp"]
+    })
