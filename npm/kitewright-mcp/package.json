@@ -1,7 +1,8 @@
 {
   "name": "@kitewright/mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Kitewright browser-automation MCP server — run with npx, no build step. Backed by the Rust kite engine.",
+  "mcpName": "io.github.kitewright/mcp",
   "license": "MIT",
   "repository": "github:kitewright/kitewright",
   "publishConfig": {
