@@ -1,8 +1,12 @@
 # Kitewright
 
-**Browser automation for AI agents as a single small binary.** An MCP server (Streamable HTTP) that gives LLM clients `navigate` / `screenshot` / `extract` — without carrying the Node.js + Playwright stack.
+**Browser automation for AI agents as a single small binary.** An MCP server (Streamable HTTP + stdio) that gives LLM clients `navigate` / `screenshot` / `extract` — without carrying the Node.js + Playwright stack.
 
-> Working name — final project name TBD before launch.
+Install in one line:
+
+```bash
+claude mcp add kitewright -- npx -y @kitewright/mcp
+```
 
 ## Why — measured, not claimed
 

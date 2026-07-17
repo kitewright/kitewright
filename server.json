@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.kitewright/mcp",
+  "description": "Fast, lightweight browser automation for AI agents as a single small binary — navigate, screenshot, extract, fill forms, and HTML→PDF, without the Node.js + Playwright stack.",
+  "status": "active",
+  "repository": {
+    "url": "https://github.com/kitewright/kitewright",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/kitewright/kitewright",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@kitewright/mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
