@@ -2,6 +2,8 @@
 
 **Browser automation for AI agents as a single small binary.** An MCP server (Streamable HTTP + stdio) that gives LLM clients `navigate` / `screenshot` / `extract` — without carrying the Node.js + Playwright stack.
 
+![Kitewright demo — starts in 75 ms, ~8 MB idle, a real MCP endpoint, one-line install](docs/demo.gif)
+
 Install in one line:
 
 ```bash
