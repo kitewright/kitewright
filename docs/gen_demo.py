@@ -39,10 +39,7 @@ def seg(t, c=FG, b=False): return (t, c, b)
 PROMPT = seg("$ ", GREEN, True)
 SCRIPT = [
     ("out", [[seg("# Kitewright — browser automation for AI agents, one 7 MB binary", GRAY)]]),
-    ("hold", 10),
-    ("type", [PROMPT, seg("kite --version")]),
-    ("out", [[seg("kite 0.1.0", TEAL)], []]),
-    ("hold", 10),
+    ("hold", 14),
     ("type", [PROMPT, seg("KITE_HEADLESS=1 kite &"), seg("   # start the MCP server", GRAY)]),
     ("out", [[seg("kitewright listening on ", FG), seg("http://127.0.0.1:8090/mcp", BLUE),
               seg("   (75 ms)", GRAY)], []]),
