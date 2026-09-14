@@ -1707,6 +1707,17 @@ impl BrowserSession {
                 // first — the helper does its own CDP call).
                 drop(guard);
                 apply_pending_localstorage(st, &page).await;
+                // Refresh the auto-restore snapshot from the live page so a later
+                // idle-reap restores cookies set SINCE the last navigation — e.g.
+                // an interactive login (fill_secret → click/Enter → redirect),
+                // which never routes through goto. By the next op the login has
+                // settled, so the context now holds the auth cookie. Best-effort:
+                // a capture failure must never fail the caller's operation.
+                if st.last_url.is_some() {
+                    if let Ok(state) = capture_state(&page).await {
+                        st.auto_state = Some(state);
+                    }
+                }
                 return Ok(page);
             }
         }
@@ -1906,10 +1917,23 @@ impl BrowserSession {
     async fn goto(&self, st: &mut SessionState, page: &Page, url: &str, lite: bool) -> Result<()> {
         validate_navigation_url(url)?;
         apply_blocking(page, lite).await;
-        tokio::time::timeout(self.shared.engine.config.nav_timeout, page.goto(url))
-            .await
-            .context("navigation timed out")?
-            .with_context(|| format!("navigation to {url} failed"))?;
+        match tokio::time::timeout(self.shared.engine.config.nav_timeout, page.goto(url)).await {
+            Ok(res) => {
+                res.with_context(|| format!("navigation to {url} failed"))?;
+            }
+            // Heavy SPAs (e.g. Instagram) can miss the load event within the
+            // timeout even though the DOM has navigated and is usable. Proceed
+            // with the partial page instead of failing the whole navigation — the
+            // caller can wait_for a specific selector. A genuine navigation error
+            // (bad URL, DNS, refused connection) still surfaces via the Ok branch.
+            Err(_elapsed) => {
+                tracing::info!(
+                    url,
+                    timeout_s = self.shared.engine.config.nav_timeout.as_secs(),
+                    "navigation load event slow; proceeding with the partial page"
+                );
+            }
+        }
         st.last_url = Some(
             page.url()
                 .await
@@ -2044,7 +2068,13 @@ fn resolve_actionable_timeout(timeout_ms: Option<u64>) -> Duration {
 /// plaintext would defeat the purpose of the tool.
 fn resolve_secret_ref(reference: &str) -> Result<String> {
     if let Some(name) = reference.strip_prefix("env:") {
-        std::env::var(name).map_err(|_| anyhow!("secret env var {name:?} is not set on the server"))
+        std::env::var(name).map_err(|_| {
+            anyhow!(
+                "secret env var {name:?} is not set on the server — set it in the \
+                 kitewright server's environment. browser_fill_secret resolves \
+                 secrets server-side and is not a passthrough from the tool call."
+            )
+        })
     } else if let Some(path) = reference.strip_prefix("file:") {
         if std::env::var("KITE_ALLOW_SECRET_FILES").is_err() {
             bail!(
