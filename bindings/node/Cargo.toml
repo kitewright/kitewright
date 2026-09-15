@@ -1,6 +1,6 @@
 [package]
 name = "kitewright-node"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Puppeteer-compatible Node.js (napi-rs) bindings over kitewright-engine"
