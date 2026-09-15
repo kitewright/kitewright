@@ -1,6 +1,6 @@
 {
   "name": "@kitewright/node",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Puppeteer-compatible (experimental) HTML→PDF / browser automation backed by the Rust kitewright-engine via napi-rs",
   "license": "MIT",
   "publishConfig": {
@@ -33,10 +33,10 @@
     "binding.d.ts"
   ],
   "optionalDependencies": {
-    "@kitewright/node-darwin-arm64": "0.1.0",
-    "@kitewright/node-darwin-x64": "0.1.0",
-    "@kitewright/node-linux-x64-gnu": "0.1.0",
-    "@kitewright/node-win32-x64-msvc": "0.1.0"
+    "@kitewright/node-darwin-arm64": "0.1.1",
+    "@kitewright/node-darwin-x64": "0.1.1",
+    "@kitewright/node-linux-x64-gnu": "0.1.1",
+    "@kitewright/node-win32-x64-msvc": "0.1.1"
   },
   "scripts": {
     "build": "napi build --platform --release --js binding.js --dts binding.d.ts",
