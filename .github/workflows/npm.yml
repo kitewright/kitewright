@@ -58,6 +58,9 @@ jobs:
     name: publish
     needs: build
     runs-on: ubuntu-latest
+    # napi prepublish creates a GitHub release for the tag; needs write on contents.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -81,3 +84,4 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
