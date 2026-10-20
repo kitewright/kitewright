@@ -36,7 +36,7 @@ base64 = "0.22"
 # `kite install`: fetch the Chrome-for-Testing manifest + download a
 # chrome-headless-shell build. rustls (no system OpenSSL); minimal zip decode.
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
-zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
